@@ -24,7 +24,8 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar,
     QFileDialog, QMessageBox, QSplitter, QFrame, QSpinBox,
-    QDoubleSpinBox, QStyle, QStyleFactory, QScrollArea
+    QDoubleSpinBox, QStyle, QStyleFactory, QScrollArea,
+    QDialog, QGridLayout, QFormLayout, QListWidget
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon
@@ -37,15 +38,25 @@ from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 @dataclass
 class Cargo:
     """货物类"""
-    name: str
-    length: float  # 长度 (cm)
-    width: float   # 宽度 (cm)
-    height: float  # 高度 (cm)
-    weight: float  # 重量 (kg)
-    quantity: int  # 数量
+    id: str = ""  # 货物唯一ID
+    name: str = ""
+    length: float = 0  # 长度 (cm)
+    width: float = 0   # 宽度 (cm)
+    height: float = 0  # 高度 (cm)
+    weight: float = 0  # 重量 (kg)
+    quantity: int = 1  # 数量
     stackable: bool = True  # 是否可堆叠
     max_stack: int = 3  # 最大堆叠层数
     color: Tuple[float, float, float] = (0.3, 0.7, 0.3)  # RGB颜色
+    group_id: str = ""  # 组ID，同组货物锁定在一起
+    allow_rotate: bool = True  # 是否允许旋转
+    bottom_only: bool = False  # 是否只能放在底层
+    priority: int = 0  # 装载优先级（数字越大越优先）
+    
+    def __post_init__(self):
+        if not self.id:
+            import uuid
+            self.id = str(uuid.uuid4())[:8]
     
     @property
     def volume(self) -> float:
@@ -61,13 +72,28 @@ class Cargo:
 
 
 @dataclass
-class Container:
-    """集装箱类"""
+class CargoGroup:
+    """货物组 - 多个货物锁定在一起"""
+    id: str
     name: str
-    length: float
-    width: float
-    height: float
-    max_weight: float
+    cargo_ids: List[str] = field(default_factory=list)
+    # 组合后的整体尺寸（自动计算或手动指定）
+    combined_length: float = 0
+    combined_width: float = 0
+    combined_height: float = 0
+    combined_weight: float = 0
+
+
+@dataclass
+class Container:
+    """容器类（集装箱/货车/托盘）"""
+    name: str
+    length: float  # 内部长度 (cm)
+    width: float   # 内部宽度 (cm)
+    height: float  # 内部高度 (cm)
+    max_weight: float  # 最大载重 (kg)
+    container_type: str = "container"  # container/truck/pallet
+    description: str = ""
     
     @property
     def volume(self) -> float:
@@ -86,6 +112,7 @@ class PlacedCargo:
     y: float
     z: float
     rotated: bool = False
+    step_number: int = 0  # 装箱步骤编号
     
     @property
     def actual_length(self) -> float:
@@ -94,14 +121,66 @@ class PlacedCargo:
     @property
     def actual_width(self) -> float:
         return self.cargo.length if self.rotated else self.cargo.width
+    
+    @property
+    def center_x(self) -> float:
+        return self.x + self.actual_length / 2
+    
+    @property
+    def center_y(self) -> float:
+        return self.y + self.actual_width / 2
+    
+    @property
+    def center_z(self) -> float:
+        return self.z + self.cargo.height / 2
 
+
+# ==================== 容器预设 ====================
 
 # 标准集装箱
+CONTAINERS_SHIPPING = {
+    "20英尺标准箱 (20' GP)": Container("20英尺标准箱", 589, 234, 238, 21770, "container", "标准20尺海运集装箱"),
+    "40英尺标准箱 (40' GP)": Container("40英尺标准箱", 1203, 234, 238, 26680, "container", "标准40尺海运集装箱"),
+    "40英尺高箱 (40' HC)": Container("40英尺高箱", 1203, 234, 269, 26460, "container", "40尺高柜海运集装箱"),
+    "45英尺高箱 (45' HC)": Container("45英尺高箱", 1351, 234, 269, 25600, "container", "45尺高柜海运集装箱"),
+}
+
+# 货车类型
+CONTAINERS_TRUCK = {
+    "4.2米厢式货车": Container("4.2米厢式货车", 420, 180, 180, 2000, "truck", "轻型厢式货车"),
+    "6.8米平板车": Container("6.8米平板车", 680, 235, 230, 10000, "truck", "中型平板货车"),
+    "7.7米厢式货车": Container("7.7米厢式货车", 770, 235, 240, 12000, "truck", "中型厢式货车"),
+    "9.6米厢式货车": Container("9.6米厢式货车", 960, 235, 250, 18000, "truck", "大型厢式货车"),
+    "9.6米飞翼车": Container("9.6米飞翼车", 960, 235, 260, 18000, "truck", "侧开式飞翼货车"),
+    "13米平板车": Container("13米平板车", 1300, 245, 260, 32000, "truck", "重型平板货车"),
+    "13米厢式货车": Container("13米厢式货车", 1300, 245, 270, 32000, "truck", "重型厢式货车"),
+    "17.5米高低板车": Container("17.5米高低板车", 1750, 300, 300, 35000, "truck", "超长高低板挂车"),
+    "17.5米平板车": Container("17.5米平板车", 1750, 300, 280, 35000, "truck", "超长平板挂车"),
+}
+
+# 托盘类型
+CONTAINERS_PALLET = {
+    "标准托盘 (1200×1000)": Container("标准托盘", 120, 100, 150, 1000, "pallet", "欧标托盘1200×1000mm"),
+    "标准托盘 (1200×800)": Container("标准托盘", 120, 80, 150, 800, "pallet", "欧标托盘1200×800mm"),
+    "美标托盘 (1219×1016)": Container("美标托盘", 122, 102, 150, 1000, "pallet", "美标托盘48×40英寸"),
+    "日标托盘 (1100×1100)": Container("日标托盘", 110, 110, 150, 1000, "pallet", "日标方形托盘"),
+    "仓储笼 (1200×1000×890)": Container("仓储笼", 120, 100, 89, 1500, "pallet", "标准仓储笼箱"),
+    "周转箱 (600×400×280)": Container("周转箱", 60, 40, 28, 50, "pallet", "标准物流周转箱"),
+}
+
+# 合并所有容器类型
 STANDARD_CONTAINERS = {
-    "20英尺标准箱 (20' GP)": Container("20英尺标准箱", 589, 234, 238, 21770),
-    "40英尺标准箱 (40' GP)": Container("40英尺标准箱", 1203, 234, 238, 26680),
-    "40英尺高箱 (40' HC)": Container("40英尺高箱", 1203, 234, 269, 26460),
-    "45英尺高箱 (45' HC)": Container("45英尺高箱", 1351, 234, 269, 25600),
+    **CONTAINERS_SHIPPING,
+    **CONTAINERS_TRUCK,
+    **CONTAINERS_PALLET,
+}
+
+# 容器分类
+CONTAINER_CATEGORIES = {
+    "海运集装箱": list(CONTAINERS_SHIPPING.keys()),
+    "公路货车": list(CONTAINERS_TRUCK.keys()),
+    "托盘/周转箱": list(CONTAINERS_PALLET.keys()),
+    "自定义": [],
 }
 
 # 预设颜色 (RGB 0-1)
@@ -124,17 +203,113 @@ CARGO_COLORS = [
 ]
 
 
+# ==================== 配载规则 ====================
+
+@dataclass
+class LoadingRule:
+    """配载规则"""
+    id: str
+    name: str
+    description: str
+    enabled: bool = True
+    priority: int = 0  # 优先级，数字越大越优先
+    
+    def apply(self, cargos: List[Cargo], placed: List[PlacedCargo]) -> List[Cargo]:
+        """应用规则对货物排序，子类重写"""
+        return cargos
+
+
+class RuleSameSizeFirst(LoadingRule):
+    """相同尺寸优先配载规则"""
+    def __init__(self):
+        super().__init__("same_size", "相同尺寸优先", "相同或相近尺寸的货物优先放在一起", True, 50)
+    
+    def apply(self, cargos: List[Cargo], placed: List[PlacedCargo]) -> List[Cargo]:
+        if not cargos:
+            return cargos
+        # 按尺寸分组排序
+        def size_key(c):
+            return (round(c.length / 10) * 10, round(c.width / 10) * 10, round(c.height / 10) * 10)
+        return sorted(cargos, key=size_key, reverse=True)
+
+
+class RuleHeavyBottom(LoadingRule):
+    """重物下沉规则"""
+    def __init__(self, weight_threshold: float = 100):
+        super().__init__("heavy_bottom", "重物下沉", f"重量超过{weight_threshold}kg的货物优先放在底层", True, 80)
+        self.weight_threshold = weight_threshold
+    
+    def apply(self, cargos: List[Cargo], placed: List[PlacedCargo]) -> List[Cargo]:
+        heavy = [c for c in cargos if c.weight >= self.weight_threshold]
+        light = [c for c in cargos if c.weight < self.weight_threshold]
+        # 重物优先，按重量降序
+        heavy.sort(key=lambda c: c.weight, reverse=True)
+        return heavy + light
+
+
+class RuleSimilarSizeStack(LoadingRule):
+    """相近尺寸堆叠规则"""
+    def __init__(self, tolerance: float = 50):
+        super().__init__("similar_stack", "相近尺寸堆叠", f"长度差{tolerance}mm以内的货物可堆叠", True, 60)
+        self.tolerance = tolerance  # mm
+    
+    def apply(self, cargos: List[Cargo], placed: List[PlacedCargo]) -> List[Cargo]:
+        # 按长度排序，便于相近尺寸的货物放在一起
+        return sorted(cargos, key=lambda c: c.length, reverse=True)
+
+
+class RuleVolumeFirst(LoadingRule):
+    """体积优先规则（默认）"""
+    def __init__(self):
+        super().__init__("volume_first", "体积优先", "按体积从大到小装载", True, 40)
+    
+    def apply(self, cargos: List[Cargo], placed: List[PlacedCargo]) -> List[Cargo]:
+        return sorted(cargos, key=lambda c: c.volume, reverse=True)
+
+
+class RulePriorityFirst(LoadingRule):
+    """优先级规则"""
+    def __init__(self):
+        super().__init__("priority_first", "按优先级", "按货物设定的优先级装载", True, 100)
+    
+    def apply(self, cargos: List[Cargo], placed: List[PlacedCargo]) -> List[Cargo]:
+        return sorted(cargos, key=lambda c: c.priority, reverse=True)
+
+
+# 默认规则集
+DEFAULT_RULES = [
+    RulePriorityFirst(),
+    RuleHeavyBottom(100),
+    RuleSimilarSizeStack(50),
+    RuleSameSizeFirst(),
+    RuleVolumeFirst(),
+]
+
+
 class LoadingAlgorithm:
     """装载算法类"""
     
-    def __init__(self, container: Container):
+    def __init__(self, container: Container, rules: List[LoadingRule] = None, 
+                 cargo_groups: List[CargoGroup] = None):
         self.container = container
         self.placed_cargos: List[PlacedCargo] = []
+        self.rules = rules or DEFAULT_RULES.copy()
+        self.cargo_groups = cargo_groups or []
+        self.step_counter = 0
+        self.similar_size_tolerance = 50  # mm，相近尺寸容差
     
     def can_place(self, cargo: Cargo, x: float, y: float, z: float, rotated: bool) -> bool:
+        # 检查是否允许旋转
+        if rotated and not cargo.allow_rotate:
+            return False
+        
         length = cargo.width if rotated else cargo.length
         width = cargo.length if rotated else cargo.width
         height = cargo.height
+        
+        # 检查是否只能放底层
+        if cargo.bottom_only and z > 0.01:
+            return False
         
         if x + length > self.container.length + 0.01:
             return False
@@ -162,6 +337,12 @@ class LoadingAlgorithm:
                     pl = placed.actual_length
                     pw = placed.actual_width
                     
+                    # 检查相近尺寸堆叠规则
+                    if abs(cargo.length - placed.cargo.length) <= self.similar_size_tolerance or \
+                       abs(cargo.width - placed.cargo.width) <= self.similar_size_tolerance:
+                        # 允许相近尺寸堆叠
+                        pass
+                    
                     overlap_x = max(0, min(x + length, placed.x + pl) - max(x, placed.x))
                     overlap_y = max(0, min(y + width, placed.y + pw) - max(y, placed.y))
                     support_area += overlap_x * overlap_y
@@ -184,11 +365,15 @@ class LoadingAlgorithm:
             
             positions.append((placed.x + pl, placed.y, placed.z))
             positions.append((placed.x, placed.y + pw, placed.z))
-            if placed.cargo.stackable:
+            if placed.cargo.stackable and not cargo.bottom_only:
                 positions.append((placed.x, placed.y, placed.z + ph))
         
+        rotations = [False]
+        if cargo.allow_rotate:
+            rotations.append(True)
+        
         for x, y, z in positions:
-            for rotated in [False, True]:
+            for rotated in rotations:
                 if self.can_place(cargo, x, y, z, rotated):
                     score = x + y * 2 + z * 3
                     if score < best_score:
@@ -201,20 +386,87 @@ class LoadingAlgorithm:
         position = self.find_position(cargo)
         if position:
             x, y, z, rotated = position
-            placed = PlacedCargo(cargo, x, y, z, rotated)
+            self.step_counter += 1
+            placed = PlacedCargo(cargo, x, y, z, rotated, self.step_counter)
             self.placed_cargos.append(placed)
             return True
         return False
     
-    def load_all(self, cargos: List[Cargo]) -> Tuple[List[PlacedCargo], List[Cargo]]:
-        sorted_cargos = []
+    def apply_rules(self, cargos: List[Cargo]) -> List[Cargo]:
+        """应用所有启用的规则"""
+        # 按优先级排序规则
+        sorted_rules = sorted([r for r in self.rules if r.enabled], 
+                             key=lambda r: r.priority, reverse=True)
+        
+        result = cargos.copy()
+        for rule in sorted_rules:
+            result = rule.apply(result, self.placed_cargos)
+        
+        return result
+    
+    def expand_groups(self, cargos: List[Cargo]) -> List[Cargo]:
+        """处理货物组，将组合货物合并为单个虚拟货物"""
+        if not self.cargo_groups:
+            return cargos
+        
+        result = []
+        grouped_ids = set()
+        
+        for group in self.cargo_groups:
+            group_cargos = [c for c in cargos if c.id in group.cargo_ids]
+            if group_cargos:
+                # 计算组合后的尺寸（取最大包围盒）
+                if group.combined_length > 0:
+                    combined = Cargo(
+                        name=group.name,
+                        length=group.combined_length,
+                        width=group.combined_width,
+                        height=group.combined_height,
+                        weight=group.combined_weight or sum(c.weight for c in group_cargos),
+                        quantity=1,
+                        stackable=all(c.stackable for c in group_cargos),
+                        color=group_cargos[0].color if group_cargos else (0.5, 0.5, 0.5),
+                        group_id=group.id
+                    )
+                else:
+                    # 自动计算组合尺寸
+                    combined = Cargo(
+                        name=group.name,
+                        length=max(c.length for c in group_cargos),
+                        width=max(c.width for c in group_cargos),
+                        height=sum(c.height for c in group_cargos),
+                        weight=sum(c.weight for c in group_cargos),
+                        quantity=1,
+                        stackable=all(c.stackable for c in group_cargos),
+                        color=group_cargos[0].color if group_cargos else (0.5, 0.5, 0.5),
+                        group_id=group.id
+                    )
+                result.append(combined)
+                grouped_ids.update(group.cargo_ids)
+        
+        # 添加未分组的货物
         for cargo in cargos:
-            for _ in range(cargo.quantity):
+            if cargo.id not in grouped_ids:
+                result.append(cargo)
+        
+        return result
+    
+    def load_all(self, cargos: List[Cargo]) -> Tuple[List[PlacedCargo], List[Cargo]]:
+        """装载所有货物"""
+        # 处理货物组
+        processed_cargos = self.expand_groups(cargos)
+        
+        # 展开数量
+        sorted_cargos = []
+        for cargo in processed_cargos:
+            for i in range(cargo.quantity):
                 single_cargo = copy.copy(cargo)
                 single_cargo.quantity = 1
+                single_cargo.id = f"{cargo.id}_{i}"
                 sorted_cargos.append(single_cargo)
         
-        sorted_cargos.sort(key=lambda c: c.volume, reverse=True)
+        # 应用配载规则
+        sorted_cargos = self.apply_rules(sorted_cargos)
         
         loaded = []
         not_loaded = []
@@ -227,16 +479,87 @@ class LoadingAlgorithm:
         
         return loaded, not_loaded
     
+    def calculate_center_of_gravity(self) -> Tuple[float, float, float]:
+        """计算重心位置"""
+        if not self.placed_cargos:
+            return (0, 0, 0)
+        
+        total_weight = sum(p.cargo.weight for p in self.placed_cargos)
+        if total_weight == 0:
+            return (0, 0, 0)
+        
+        cx = sum(p.center_x * p.cargo.weight for p in self.placed_cargos) / total_weight
+        cy = sum(p.center_y * p.cargo.weight for p in self.placed_cargos) / total_weight
+        cz = sum(p.center_z * p.cargo.weight for p in self.placed_cargos) / total_weight
+        
+        return (cx, cy, cz)
+    
+    def calculate_center_offset(self) -> Tuple[float, float, float]:
+        """计算重心偏移量（相对于容器中心）"""
+        cx, cy, cz = self.calculate_center_of_gravity()
+        container_cx = self.container.length / 2
+        container_cy = self.container.width / 2
+        container_cz = self.container.height / 2
+        
+        return (cx - container_cx, cy - container_cy, cz - container_cz)
+    
+    def get_loading_steps(self) -> List[dict]:
+        """获取装箱步骤"""
+        steps = []
+        sorted_placements = sorted(self.placed_cargos, key=lambda p: p.step_number)
+        
+        for p in sorted_placements:
+            position_desc = []
+            if p.x < self.container.length * 0.33:
+                position_desc.append("柜头")
+            elif p.x > self.container.length * 0.66:
+                position_desc.append("柜尾")
+            else:
+                position_desc.append("中部")
+            
+            if p.y < self.container.width * 0.5:
+                position_desc.append("左侧")
+            else:
+                position_desc.append("右侧")
+            
+            if p.z < 1:
+                position_desc.append("底层")
+            elif p.z > self.container.height * 0.5:
+                position_desc.append("上层")
+            else:
+                position_desc.append("中层")
+            
+            steps.append({
+                "step": p.step_number,
+                "cargo_name": p.cargo.name,
+                "position": f"X:{p.x:.0f} Y:{p.y:.0f} Z:{p.z:.0f}",
+                "position_desc": " ".join(position_desc),
+                "rotated": "是" if p.rotated else "否",
+                "size": f"{p.actual_length:.0f}×{p.actual_width:.0f}×{p.cargo.height:.0f}"
+            })
+        
+        return steps
+    
     def get_statistics(self) -> dict:
         total_cargo_volume = sum(p.cargo.volume for p in self.placed_cargos)
         total_cargo_weight = sum(p.cargo.weight for p in self.placed_cargos)
         
+        # 计算重心偏移
+        offset_x, offset_y, offset_z = self.calculate_center_offset()
+        
+        # 计算偏移百分比
+        offset_x_pct = (offset_x / (self.container.length / 2)) * 100 if self.container.length > 0 else 0
+        offset_y_pct = (offset_y / (self.container.width / 2)) * 100 if self.container.width > 0 else 0
+        
         return {
             "loaded_count": len(self.placed_cargos),
             "total_volume": total_cargo_volume,
-            "volume_utilization": (total_cargo_volume / self.container.volume) * 100,
+            "volume_utilization": (total_cargo_volume / self.container.volume) * 100 if self.container.volume > 0 else 0,
             "total_weight": total_cargo_weight,
-            "weight_utilization": (total_cargo_weight / self.container.max_weight) * 100,
+            "weight_utilization": (total_cargo_weight / self.container.max_weight) * 100 if self.container.max_weight > 0 else 0,
+            "center_of_gravity": self.calculate_center_of_gravity(),
+            "center_offset": (offset_x, offset_y, offset_z),
+            "center_offset_pct": (offset_x_pct, offset_y_pct),
         }
 
 
@@ -596,14 +919,18 @@ class ContainerLoadingApp(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("集装箱配载软件 v2.0")
-        self.setMinimumSize(1400, 900)
-        self.resize(1500, 950)
+        self.setWindowTitle("集装箱配载软件 v3.0")
+        self.setMinimumSize(1500, 900)
+        self.resize(1600, 1000)
         
         self.cargos: List[Cargo] = []
+        self.cargo_groups: List[CargoGroup] = []
         self.container: Optional[Container] = None
         self.placed_cargos: List[PlacedCargo] = []
         self.color_index = 0
+        self.loading_rules = DEFAULT_RULES.copy()
+        self.custom_containers: dict = {}
+        self.last_statistics: dict = {}
         
         self.setup_style()
         self.setup_ui()
@@ -729,27 +1056,56 @@ class ContainerLoadingApp(QMainWindow):
         
         # 左侧面板
         left_panel = QWidget()
-        left_panel.setFixedWidth(380)
+        left_panel.setFixedWidth(420)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(12)
         left_layout.setContentsMargins(0, 0, 0, 0)
         
-        # 集装箱选择
-        container_group = QGroupBox("📦 集装箱选择")
+        # 使用滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(12)
+        
+        # ==================== 容器选择 ====================
+        container_group = QGroupBox("📦 容器选择")
         container_layout = QVBoxLayout(container_group)
         
-        self.container_combo = QComboBox()
-        self.container_combo.addItems(STANDARD_CONTAINERS.keys())
-        self.container_combo.currentTextChanged.connect(self.on_container_selected)
-        container_layout.addWidget(self.container_combo)
+        # 容器类别
+        cat_layout = QHBoxLayout()
+        cat_layout.addWidget(QLabel("类别:"))
+        self.container_category = QComboBox()
+        self.container_category.addItems(list(CONTAINER_CATEGORIES.keys()))
+        self.container_category.currentTextChanged.connect(self.on_category_changed)
+        cat_layout.addWidget(self.container_category)
+        container_layout.addLayout(cat_layout)
         
+        # 容器型号
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("型号:"))
+        self.container_combo = QComboBox()
+        self.container_combo.currentTextChanged.connect(self.on_container_selected)
+        type_layout.addWidget(self.container_combo)
+        container_layout.addLayout(type_layout)
+        
+        # 自定义容器按钮
+        custom_btn_layout = QHBoxLayout()
+        custom_btn = ModernButton("➕ 自定义容器")
+        custom_btn.clicked.connect(self.show_custom_container_dialog)
+        custom_btn_layout.addWidget(custom_btn)
+        container_layout.addLayout(custom_btn_layout)
+        
+        # 容器信息
         self.container_info = QLabel()
         self.container_info.setStyleSheet("color: #9e9e9e; font-size: 12px;")
+        self.container_info.setWordWrap(True)
         container_layout.addWidget(self.container_info)
         
-        left_layout.addWidget(container_group)
+        scroll_layout.addWidget(container_group)
         
-        # 货物添加
+        # ==================== 货物添加 ====================
         cargo_group = QGroupBox("📋 添加货物")
         cargo_layout = QVBoxLayout(cargo_group)
         
@@ -797,27 +1153,46 @@ class ContainerLoadingApp(QMainWindow):
         weight_layout.addWidget(self.cargo_quantity)
         cargo_layout.addLayout(weight_layout)
         
-        # 可堆叠
+        # 货物选项
+        options_layout = QHBoxLayout()
         self.cargo_stackable = QCheckBox("可堆叠")
         self.cargo_stackable.setChecked(True)
-        cargo_layout.addWidget(self.cargo_stackable)
+        options_layout.addWidget(self.cargo_stackable)
+        self.cargo_rotatable = QCheckBox("可旋转")
+        self.cargo_rotatable.setChecked(True)
+        options_layout.addWidget(self.cargo_rotatable)
+        self.cargo_bottom_only = QCheckBox("仅底层")
+        options_layout.addWidget(self.cargo_bottom_only)
+        cargo_layout.addLayout(options_layout)
+        
+        # 优先级
+        priority_layout = QHBoxLayout()
+        priority_layout.addWidget(QLabel("优先级:"))
+        self.cargo_priority = QSpinBox()
+        self.cargo_priority.setRange(0, 100)
+        self.cargo_priority.setValue(0)
+        self.cargo_priority.setToolTip("数字越大优先级越高")
+        priority_layout.addWidget(self.cargo_priority)
+        priority_layout.addStretch()
+        cargo_layout.addLayout(priority_layout)
         
         # 添加按钮
         add_btn = ModernButton("➕ 添加货物", primary=True)
         add_btn.clicked.connect(self.add_cargo)
         cargo_layout.addWidget(add_btn)
         
-        left_layout.addWidget(cargo_group)
+        scroll_layout.addWidget(cargo_group)
         
-        # 货物列表
+        # ==================== 货物列表 ====================
         list_group = QGroupBox("📜 货物列表")
         list_layout = QVBoxLayout(list_group)
         
         self.cargo_table = QTableWidget()
-        self.cargo_table.setColumnCount(5)
-        self.cargo_table.setHorizontalHeaderLabels(["名称", "尺寸(cm)", "重量", "数量", "体积(m³)"])
+        self.cargo_table.setColumnCount(6)
+        self.cargo_table.setHorizontalHeaderLabels(["名称", "尺寸(cm)", "重量", "数量", "选项", "体积(m³)"])
         self.cargo_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.cargo_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.cargo_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.cargo_table.setAlternatingRowColors(True)
         list_layout.addWidget(self.cargo_table)
         
@@ -838,9 +1213,39 @@ class ContainerLoadingApp(QMainWindow):
         list_btn_layout.addWidget(export_btn)
         list_layout.addLayout(list_btn_layout)
         
-        left_layout.addWidget(list_group)
+        # 货物组操作
+        group_btn_layout = QHBoxLayout()
+        create_group_btn = ModernButton("🔗 创建组")
+        create_group_btn.clicked.connect(self.create_cargo_group)
+        create_group_btn.setToolTip("将选中的货物组合为一组")
+        group_btn_layout.addWidget(create_group_btn)
+        ungroup_btn = ModernButton("解除组")
+        ungroup_btn.clicked.connect(self.ungroup_cargo)
+        group_btn_layout.addWidget(ungroup_btn)
+        list_layout.addLayout(group_btn_layout)
         
-        # 配载操作
+        scroll_layout.addWidget(list_group)
+        
+        # ==================== 配载规则 ====================
+        rules_group = QGroupBox("📐 配载规则")
+        rules_layout = QVBoxLayout(rules_group)
+        
+        # 规则列表
+        self.rules_list = QTableWidget()
+        self.rules_list.setColumnCount(3)
+        self.rules_list.setHorizontalHeaderLabels(["启用", "规则", "优先级"])
+        self.rules_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.rules_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.rules_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.rules_list.setColumnWidth(0, 50)
+        self.rules_list.setColumnWidth(2, 60)
+        self.rules_list.setMaximumHeight(150)
+        self.setup_rules_table()
+        rules_layout.addWidget(self.rules_list)
+        
+        scroll_layout.addWidget(rules_group)
+        
+        # ==================== 配载操作 ====================
         action_group = QGroupBox("⚙️ 配载操作")
         action_layout = QVBoxLayout(action_group)
         
@@ -848,25 +1253,49 @@ class ContainerLoadingApp(QMainWindow):
         start_btn.clicked.connect(self.start_loading)
         action_layout.addWidget(start_btn)
         
+        manual_btn = ModernButton("✋ 手动调整")
+        manual_btn.clicked.connect(self.enable_manual_edit)
+        manual_btn.setToolTip("配载后手动调整货物位置")
+        action_layout.addWidget(manual_btn)
+        
         clear_result_btn = ModernButton("清除结果")
         clear_result_btn.clicked.connect(self.clear_loading)
         action_layout.addWidget(clear_result_btn)
         
-        export_plan_btn = ModernButton("📋 导出方案")
+        export_plan_btn = ModernButton("📋 导出详细方案")
         export_plan_btn.clicked.connect(self.export_loading_plan)
         action_layout.addWidget(export_plan_btn)
         
-        left_layout.addWidget(action_group)
-        left_layout.addStretch()
+        scroll_layout.addWidget(action_group)
         
-        # 右侧面板
+        # ==================== 两步装载 ====================
+        twostep_group = QGroupBox("📦 两步装载（先组托再装柜）")
+        twostep_layout = QVBoxLayout(twostep_group)
+        
+        palletize_btn = ModernButton("第一步: 货物组托")
+        palletize_btn.clicked.connect(self.palletize_cargos)
+        palletize_btn.setToolTip("将小箱先组到托盘上")
+        twostep_layout.addWidget(palletize_btn)
+        
+        load_pallets_btn = ModernButton("第二步: 托盘装柜")
+        load_pallets_btn.clicked.connect(self.load_pallets_to_container)
+        load_pallets_btn.setToolTip("将托盘装入集装箱")
+        twostep_layout.addWidget(load_pallets_btn)
+        
+        scroll_layout.addWidget(twostep_group)
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        left_layout.addWidget(scroll)
+        
+        # ==================== 右侧面板 ====================
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setSpacing(12)
         right_layout.setContentsMargins(0, 0, 0, 0)
         
         # 3D视图
-        view_group = QGroupBox("🎮 3D配载视图 (鼠标左键拖动旋转，滚轮缩放，右键平移)")
+        view_group = QGroupBox("🎮 3D配载视图 (左键旋转 | 滚轮缩放 | 右键平移)")
         view_layout = QVBoxLayout(view_group)
         
         self.gl_widget = Container3DView()
@@ -897,7 +1326,8 @@ class ContainerLoadingApp(QMainWindow):
         stats_layout = QVBoxLayout(stats_group)
         
         self.stats_label = QLabel("请先添加货物并开始配载")
-        self.stats_label.setStyleSheet("font-size: 14px; color: #81D4FA;")
+        self.stats_label.setStyleSheet("font-size: 13px; color: #81D4FA;")
+        self.stats_label.setWordWrap(True)
         stats_layout.addWidget(self.stats_label)
         
         # 空间利用率
@@ -932,23 +1362,151 @@ class ContainerLoadingApp(QMainWindow):
         weight_layout.addWidget(self.weight_label)
         stats_layout.addLayout(weight_layout)
         
+        # 重心偏移
+        cog_layout = QHBoxLayout()
+        cog_layout.addWidget(QLabel("重心偏移:"))
+        self.cog_label = QLabel("X: 0% | Y: 0%")
+        self.cog_label.setStyleSheet("color: #4CAF50;")
+        cog_layout.addWidget(self.cog_label)
+        cog_layout.addStretch()
+        stats_layout.addLayout(cog_layout)
+        
         right_layout.addWidget(stats_group)
+        
+        # ==================== 装箱步骤 ====================
+        steps_group = QGroupBox("📝 装箱步骤")
+        steps_layout = QVBoxLayout(steps_group)
+        
+        self.steps_table = QTableWidget()
+        self.steps_table.setColumnCount(5)
+        self.steps_table.setHorizontalHeaderLabels(["步骤", "货物", "位置描述", "坐标", "旋转"])
+        self.steps_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.steps_table.setMaximumHeight(150)
+        steps_layout.addWidget(self.steps_table)
+        
+        right_layout.addWidget(steps_group)
         
         # 添加到主布局
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel, 1)
     
+    def setup_rules_table(self):
+        """设置规则表格"""
+        self.rules_list.setRowCount(len(self.loading_rules))
+        for i, rule in enumerate(self.loading_rules):
+            # 启用复选框
+            cb = QCheckBox()
+            cb.setChecked(rule.enabled)
+            cb.stateChanged.connect(lambda state, r=rule: setattr(r, 'enabled', state == 2))
+            self.rules_list.setCellWidget(i, 0, cb)
+            
+            # 规则名称
+            name_item = QTableWidgetItem(rule.name)
+            name_item.setToolTip(rule.description)
+            self.rules_list.setItem(i, 1, name_item)
+            
+            # 优先级
+            priority_item = QTableWidgetItem(str(rule.priority))
+            self.rules_list.setItem(i, 2, priority_item)
+    
+    def on_category_changed(self, category):
+        """容器类别变化"""
+        self.container_combo.clear()
+        if category == "海运集装箱":
+            self.container_combo.addItems(CONTAINERS_SHIPPING.keys())
+        elif category == "公路货车":
+            self.container_combo.addItems(CONTAINERS_TRUCK.keys())
+        elif category == "托盘/周转箱":
+            self.container_combo.addItems(CONTAINERS_PALLET.keys())
+        elif category == "自定义":
+            self.container_combo.addItems(self.custom_containers.keys())
+    
+    def show_custom_container_dialog(self):
+        """显示自定义容器对话框"""
+        from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("自定义容器")
+        dialog.setMinimumWidth(350)
+        
+        layout = QFormLayout(dialog)
+        
+        name_edit = QLineEdit("自定义容器1")
+        length_spin = QDoubleSpinBox()
+        length_spin.setRange(1, 50000)
+        length_spin.setValue(1200)
+        length_spin.setSuffix(" cm")
+        
+        width_spin = QDoubleSpinBox()
+        width_spin.setRange(1, 10000)
+        width_spin.setValue(240)
+        width_spin.setSuffix(" cm")
+        
+        height_spin = QDoubleSpinBox()
+        height_spin.setRange(1, 10000)
+        height_spin.setValue(260)
+        height_spin.setSuffix(" cm")
+        
+        weight_spin = QDoubleSpinBox()
+        weight_spin.setRange(1, 1000000)
+        weight_spin.setValue(25000)
+        weight_spin.setSuffix(" kg")
+        
+        type_combo = QComboBox()
+        type_combo.addItems(["集装箱", "货车", "托盘"])
+        
+        layout.addRow("名称:", name_edit)
+        layout.addRow("内部长度:", length_spin)
+        layout.addRow("内部宽度:", width_spin)
+        layout.addRow("内部高度:", height_spin)
+        layout.addRow("最大载重:", weight_spin)
+        layout.addRow("类型:", type_combo)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            type_map = {"集装箱": "container", "货车": "truck", "托盘": "pallet"}
+            container = Container(
+                name=name_edit.text(),
+                length=length_spin.value(),
+                width=width_spin.value(),
+                height=height_spin.value(),
+                max_weight=weight_spin.value(),
+                container_type=type_map[type_combo.currentText()]
+            )
+            self.custom_containers[name_edit.text()] = container
+            STANDARD_CONTAINERS[name_edit.text()] = container
+            
+            # 切换到自定义类别
+            self.container_category.setCurrentText("自定义")
+            self.on_category_changed("自定义")
+            self.container_combo.setCurrentText(name_edit.text())
+            
+            QMessageBox.information(self, "成功", f"已添加自定义容器: {name_edit.text()}")
+    
     def setup_default_container(self):
         """设置默认集装箱"""
-        self.container_combo.setCurrentIndex(1)  # 40英尺标准箱
-        self.on_container_selected(self.container_combo.currentText())
+        self.container_category.setCurrentText("海运集装箱")
+        self.on_category_changed("海运集装箱")
+        if self.container_combo.count() > 1:
+            self.container_combo.setCurrentIndex(1)  # 40英尺标准箱
     
     def on_container_selected(self, name):
-        """集装箱选择事件"""
-        self.container = STANDARD_CONTAINERS.get(name)
+        """容器选择事件"""
+        if not name:
+            return
+        self.container = STANDARD_CONTAINERS.get(name) or self.custom_containers.get(name)
         if self.container:
-            info = f"内部尺寸: {self.container.length} × {self.container.width} × {self.container.height} cm\n"
+            type_names = {"container": "集装箱", "truck": "货车", "pallet": "托盘"}
+            type_name = type_names.get(self.container.container_type, "容器")
+            info = f"类型: {type_name}\n"
+            info += f"内部尺寸: {self.container.length} × {self.container.width} × {self.container.height} cm\n"
             info += f"容积: {self.container.volume_cbm:.1f} m³ | 最大载重: {self.container.max_weight:,} kg"
+            if self.container.description:
+                info += f"\n{self.container.description}"
             self.container_info.setText(info)
             
             self.gl_widget.container = self.container
@@ -971,6 +1529,9 @@ class ContainerLoadingApp(QMainWindow):
             weight=self.cargo_weight.value(),
             quantity=self.cargo_quantity.value(),
             stackable=self.cargo_stackable.isChecked(),
+            allow_rotate=self.cargo_rotatable.isChecked(),
+            bottom_only=self.cargo_bottom_only.isChecked(),
+            priority=self.cargo_priority.value(),
             color=self.get_next_color()
         )
         
@@ -989,6 +1550,18 @@ class ContainerLoadingApp(QMainWindow):
             self.cargo_table.setItem(i, 3, QTableWidgetItem(str(cargo.quantity)))
             self.cargo_table.setItem(i, 4, QTableWidgetItem(
                 f"{cargo.total_volume/1000000:.3f}"))
+            
+            # 选项列 - 显示图标表示各种属性
+            options = []
+            if cargo.allow_rotate:
+                options.append("🔄")  # 可旋转
+            if cargo.bottom_only:
+                options.append("⬇")  # 仅底层
+            if cargo.priority > 1:
+                options.append(f"P{cargo.priority}")  # 优先级
+            if cargo.group_id:
+                options.append(f"G{cargo.group_id}")  # 分组
+            self.cargo_table.setItem(i, 5, QTableWidgetItem(" ".join(options)))
     
     def delete_cargo(self):
         """删除选中货物"""
@@ -1150,8 +1723,31 @@ class ContainerLoadingApp(QMainWindow):
             QMessageBox.warning(self, "警告", "请先添加货物")
             return
         
+        # 收集启用的规则
+        active_rules = []
+        for row in range(self.rules_table.rowCount()):
+            checkbox = self.rules_table.cellWidget(row, 0)
+            if checkbox and checkbox.isChecked():
+                rule_name = self.rules_table.item(row, 1).text()
+                priority = int(self.rules_table.item(row, 2).text())
+                
+                if rule_name == "相同尺寸优先":
+                    active_rules.append((priority, RuleSameSizeFirst()))
+                elif rule_name == "重货在下":
+                    active_rules.append((priority, RuleHeavyBottom()))
+                elif rule_name == "相似尺寸堆叠":
+                    active_rules.append((priority, RuleSimilarSizeStack()))
+                elif rule_name == "体积大优先":
+                    active_rules.append((priority, RuleVolumeFirst()))
+                elif rule_name == "优先级排序":
+                    active_rules.append((priority, RulePriorityFirst()))
+        
+        # 按优先级排序规则
+        active_rules.sort(key=lambda x: x[0], reverse=True)
+        rules = [r[1] for r in active_rules]
+        
         # 执行配载
-        algorithm = LoadingAlgorithm(self.container)
+        algorithm = LoadingAlgorithm(self.container, rules=rules, groups=self.cargo_groups)
         loaded, not_loaded = algorithm.load_all(self.cargos)
         
         self.placed_cargos = loaded
@@ -1172,18 +1768,398 @@ class ContainerLoadingApp(QMainWindow):
         self.weight_progress.setValue(int(stats['weight_utilization']))
         self.weight_label.setText(f"{stats['weight_utilization']:.1f}%")
         
+        # 更新重心显示
+        cog = stats.get('center_of_gravity', {'x': 0, 'y': 0, 'z': 0, 'offset_x': 0, 'offset_y': 0, 'status': '无数据'})
+        cog_text = f"重心位置: X={cog['x']:.1f}, Y={cog['y']:.1f}, Z={cog['z']:.1f} cm\n"
+        cog_text += f"偏移: 横向 {cog['offset_x']:.1f}cm, 纵向 {cog['offset_y']:.1f}cm | 状态: {cog['status']}"
+        self.cog_label.setText(cog_text)
+        
+        # 更新装载步骤表格
+        self.update_steps_table(stats.get('loading_steps', []))
+        
         if not_loaded:
             cargo_names = ", ".join(set(c.name for c in not_loaded))
             QMessageBox.information(self, "配载完成",
                 f"配载完成！\n\n"
                 f"空间利用率: {stats['volume_utilization']:.1f}%\n"
-                f"载重利用率: {stats['weight_utilization']:.1f}%\n\n"
+                f"载重利用率: {stats['weight_utilization']:.1f}%\n"
+                f"重心状态: {cog['status']}\n\n"
                 f"有 {len(not_loaded)} 件货物无法装入:\n{cargo_names}")
         else:
             QMessageBox.information(self, "配载完成",
                 f"所有货物已成功装载！\n\n"
                 f"空间利用率: {stats['volume_utilization']:.1f}%\n"
-                f"载重利用率: {stats['weight_utilization']:.1f}%")
+                f"载重利用率: {stats['weight_utilization']:.1f}%\n"
+                f"重心状态: {cog['status']}")
+    
+    def update_steps_table(self, steps: list):
+        """更新装载步骤表格"""
+        self.steps_table.setRowCount(len(steps))
+        for i, step in enumerate(steps):
+            self.steps_table.setItem(i, 0, QTableWidgetItem(str(step.get('step', i+1))))
+            self.steps_table.setItem(i, 1, QTableWidgetItem(step.get('cargo_name', '')))
+            self.steps_table.setItem(i, 2, QTableWidgetItem(step.get('position', '')))
+            self.steps_table.setItem(i, 3, QTableWidgetItem(step.get('securing', '标准加固')))
+    
+    def create_cargo_group(self):
+        """创建货物分组"""
+        selected_rows = set()
+        for item in self.cargo_table.selectedItems():
+            selected_rows.add(item.row())
+        
+        if len(selected_rows) < 2:
+            QMessageBox.warning(self, "警告", "请至少选择2个货物来创建分组")
+            return
+        
+        # 生成新的分组ID
+        group_id = f"G{len(self.cargo_groups) + 1}"
+        
+        # 获取选中的货物
+        group_cargos = []
+        for row in selected_rows:
+            cargo = self.cargos[row]
+            cargo.group_id = group_id
+            group_cargos.append(cargo)
+        
+        # 创建分组对象
+        group = CargoGroup(
+            id=group_id,
+            name=f"分组{len(self.cargo_groups) + 1}",
+            cargos=group_cargos
+        )
+        self.cargo_groups.append(group)
+        
+        self.update_cargo_table()
+        QMessageBox.information(self, "成功", f"已创建分组 {group_id}，包含 {len(group_cargos)} 个货物")
+    
+    def ungroup_cargo(self):
+        """取消货物分组"""
+        selected_rows = set()
+        for item in self.cargo_table.selectedItems():
+            selected_rows.add(item.row())
+        
+        if not selected_rows:
+            QMessageBox.warning(self, "警告", "请选择要取消分组的货物")
+            return
+        
+        ungrouped_count = 0
+        for row in selected_rows:
+            cargo = self.cargos[row]
+            if cargo.group_id:
+                # 从分组中移除
+                for group in self.cargo_groups:
+                    if cargo in group.cargos:
+                        group.cargos.remove(cargo)
+                        if not group.cargos:  # 如果分组为空，删除分组
+                            self.cargo_groups.remove(group)
+                        break
+                cargo.group_id = None
+                ungrouped_count += 1
+        
+        self.update_cargo_table()
+        if ungrouped_count > 0:
+            QMessageBox.information(self, "成功", f"已取消 {ungrouped_count} 个货物的分组")
+        else:
+            QMessageBox.information(self, "提示", "选中的货物没有分组")
+    
+    def enable_manual_edit(self):
+        """启用手动编辑模式"""
+        if not self.placed_cargos:
+            QMessageBox.warning(self, "警告", "没有配载结果可编辑，请先执行配载")
+            return
+        
+        # 创建手动编辑对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("手动编辑配载")
+        dialog.setMinimumSize(800, 600)
+        layout = QVBoxLayout(dialog)
+        
+        # 说明标签
+        hint_label = QLabel("选择货物并调整其位置，可拖动滑块或直接输入坐标值")
+        hint_label.setStyleSheet("color: #888; font-size: 12px;")
+        layout.addWidget(hint_label)
+        
+        # 货物选择
+        cargo_combo = QComboBox()
+        for i, pc in enumerate(self.placed_cargos):
+            cargo_combo.addItem(f"{i+1}. {pc.cargo.name} @ ({pc.x:.0f}, {pc.y:.0f}, {pc.z:.0f})")
+        layout.addWidget(cargo_combo)
+        
+        # 位置编辑
+        pos_group = QGroupBox("位置调整")
+        pos_layout = QGridLayout(pos_group)
+        
+        x_label = QLabel("X (长度方向):")
+        x_spin = QSpinBox()
+        x_spin.setRange(0, int(self.container.length))
+        x_spin.setSingleStep(10)
+        
+        y_label = QLabel("Y (宽度方向):")
+        y_spin = QSpinBox()
+        y_spin.setRange(0, int(self.container.width))
+        y_spin.setSingleStep(10)
+        
+        z_label = QLabel("Z (高度方向):")
+        z_spin = QSpinBox()
+        z_spin.setRange(0, int(self.container.height))
+        z_spin.setSingleStep(10)
+        
+        rotate_check = QCheckBox("旋转90度")
+        
+        pos_layout.addWidget(x_label, 0, 0)
+        pos_layout.addWidget(x_spin, 0, 1)
+        pos_layout.addWidget(y_label, 1, 0)
+        pos_layout.addWidget(y_spin, 1, 1)
+        pos_layout.addWidget(z_label, 2, 0)
+        pos_layout.addWidget(z_spin, 2, 1)
+        pos_layout.addWidget(rotate_check, 3, 0, 1, 2)
+        layout.addWidget(pos_group)
+        
+        def on_cargo_selected(index):
+            if index >= 0 and index < len(self.placed_cargos):
+                pc = self.placed_cargos[index]
+                x_spin.setValue(int(pc.x))
+                y_spin.setValue(int(pc.y))
+                z_spin.setValue(int(pc.z))
+                rotate_check.setChecked(pc.rotated)
+        
+        def apply_position():
+            index = cargo_combo.currentIndex()
+            if index >= 0 and index < len(self.placed_cargos):
+                pc = self.placed_cargos[index]
+                pc.x = x_spin.value()
+                pc.y = y_spin.value()
+                pc.z = z_spin.value()
+                pc.rotated = rotate_check.isChecked()
+                self.gl_widget.update()
+                cargo_combo.setItemText(index, 
+                    f"{index+1}. {pc.cargo.name} @ ({pc.x:.0f}, {pc.y:.0f}, {pc.z:.0f})")
+        
+        cargo_combo.currentIndexChanged.connect(on_cargo_selected)
+        on_cargo_selected(0)  # 初始化第一个
+        
+        # 应用按钮
+        apply_btn = QPushButton("应用更改")
+        apply_btn.clicked.connect(apply_position)
+        apply_btn.setStyleSheet("background-color: #4CAF50; font-weight: bold;")
+        layout.addWidget(apply_btn)
+        
+        # 删除货物按钮
+        def remove_cargo():
+            index = cargo_combo.currentIndex()
+            if index >= 0 and index < len(self.placed_cargos):
+                del self.placed_cargos[index]
+                cargo_combo.removeItem(index)
+                self.gl_widget.update()
+                # 更新组合框中的编号
+                for i in range(cargo_combo.count()):
+                    pc = self.placed_cargos[i]
+                    cargo_combo.setItemText(i, 
+                        f"{i+1}. {pc.cargo.name} @ ({pc.x:.0f}, {pc.y:.0f}, {pc.z:.0f})")
+        
+        remove_btn = QPushButton("删除此货物")
+        remove_btn.clicked.connect(remove_cargo)
+        remove_btn.setStyleSheet("background-color: #f44336;")
+        layout.addWidget(remove_btn)
+        
+        # 关闭按钮
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        
+        dialog.exec()
+        
+        # 更新统计
+        if self.placed_cargos:
+            total_volume = sum(p.cargo.volume for p in self.placed_cargos)
+            total_weight = sum(p.cargo.weight for p in self.placed_cargos)
+            vol_util = (total_volume / self.container.volume) * 100
+            wt_util = (total_weight / self.container.max_weight) * 100
+            
+            self.volume_progress.setValue(int(vol_util))
+            self.volume_label.setText(f"{vol_util:.1f}%")
+            self.weight_progress.setValue(int(wt_util))
+            self.weight_label.setText(f"{wt_util:.1f}%")
+    
+    def palletize_cargos(self):
+        """小件组托 - 将小货物组合成托盘"""
+        if not self.cargos:
+            QMessageBox.warning(self, "警告", "请先添加货物")
+            return
+        
+        # 创建组托对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("小件组托")
+        dialog.setMinimumWidth(400)
+        layout = QVBoxLayout(dialog)
+        
+        # 托盘尺寸选择
+        pallet_group = QGroupBox("托盘规格")
+        pallet_layout = QFormLayout(pallet_group)
+        
+        pallet_type = QComboBox()
+        pallet_type.addItems(["标准托盘 (120×100×15)", "欧标托盘 (120×80×15)", "自定义"])
+        pallet_layout.addRow("托盘类型:", pallet_type)
+        
+        pallet_length = QSpinBox()
+        pallet_length.setRange(50, 200)
+        pallet_length.setValue(120)
+        pallet_layout.addRow("长度(cm):", pallet_length)
+        
+        pallet_width = QSpinBox()
+        pallet_width.setRange(50, 200)
+        pallet_width.setValue(100)
+        pallet_layout.addRow("宽度(cm):", pallet_width)
+        
+        max_height = QSpinBox()
+        max_height.setRange(50, 300)
+        max_height.setValue(150)
+        pallet_layout.addRow("最大堆叠高度(cm):", max_height)
+        
+        max_weight = QSpinBox()
+        max_weight.setRange(100, 2000)
+        max_weight.setValue(1000)
+        pallet_layout.addRow("最大载重(kg):", max_weight)
+        
+        def on_pallet_type_changed(index):
+            if index == 0:  # 标准托盘
+                pallet_length.setValue(120)
+                pallet_width.setValue(100)
+            elif index == 1:  # 欧标托盘
+                pallet_length.setValue(120)
+                pallet_width.setValue(80)
+        
+        pallet_type.currentIndexChanged.connect(on_pallet_type_changed)
+        layout.addWidget(pallet_group)
+        
+        # 选择要组托的货物
+        cargo_group = QGroupBox("选择货物")
+        cargo_layout = QVBoxLayout(cargo_group)
+        
+        cargo_list = QListWidget()
+        cargo_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        for cargo in self.cargos:
+            cargo_list.addItem(f"{cargo.name} - {cargo.length}×{cargo.width}×{cargo.height}cm, {cargo.weight}kg × {cargo.quantity}")
+        cargo_layout.addWidget(cargo_list)
+        
+        select_all_btn = QPushButton("全选小件(体积<0.1m³)")
+        def select_small():
+            for i, cargo in enumerate(self.cargos):
+                if cargo.volume < 100000:  # 0.1m³ = 100000 cm³
+                    cargo_list.item(i).setSelected(True)
+        select_all_btn.clicked.connect(select_small)
+        cargo_layout.addWidget(select_all_btn)
+        layout.addWidget(cargo_group)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("开始组托")
+        ok_btn.setStyleSheet("background-color: #2196F3; font-weight: bold;")
+        cancel_btn = QPushButton("取消")
+        
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_indices = [cargo_list.row(item) for item in cargo_list.selectedItems()]
+            if not selected_indices:
+                QMessageBox.warning(self, "警告", "请选择要组托的货物")
+                return
+            
+            # 执行组托逻辑
+            pallet_l = pallet_length.value()
+            pallet_w = pallet_width.value()
+            max_h = max_height.value()
+            max_wt = max_weight.value()
+            
+            # 简化的组托算法 - 创建托盘货物
+            palletized_cargos = []
+            remaining_cargos = []
+            
+            current_pallet_cargos = []
+            current_height = 15  # 托盘自身高度
+            current_weight = 0
+            pallet_count = 0
+            
+            for i, cargo in enumerate(self.cargos):
+                if i in selected_indices:
+                    # 检查是否能放入当前托盘
+                    if (current_height + cargo.height <= max_h and 
+                        current_weight + cargo.total_weight <= max_wt):
+                        for _ in range(cargo.quantity):
+                            current_pallet_cargos.append(cargo)
+                            current_weight += cargo.weight
+                            current_height = min(current_height + cargo.height, max_h)
+                    else:
+                        # 完成当前托盘，开始新托盘
+                        if current_pallet_cargos:
+                            pallet_count += 1
+                            pallet_cargo = Cargo(
+                                name=f"托盘{pallet_count}",
+                                length=pallet_l,
+                                width=pallet_w,
+                                height=current_height,
+                                weight=current_weight,
+                                quantity=1,
+                                stackable=True,
+                                color=self.get_next_color()
+                            )
+                            palletized_cargos.append(pallet_cargo)
+                        
+                        # 重置
+                        current_pallet_cargos = []
+                        current_height = 15 + cargo.height
+                        current_weight = cargo.total_weight
+                        for _ in range(cargo.quantity):
+                            current_pallet_cargos.append(cargo)
+                else:
+                    remaining_cargos.append(cargo)
+            
+            # 处理最后一个托盘
+            if current_pallet_cargos:
+                pallet_count += 1
+                pallet_cargo = Cargo(
+                    name=f"托盘{pallet_count}",
+                    length=pallet_l,
+                    width=pallet_w,
+                    height=current_height,
+                    weight=current_weight,
+                    quantity=1,
+                    stackable=True,
+                    color=self.get_next_color()
+                )
+                palletized_cargos.append(pallet_cargo)
+            
+            # 更新货物列表
+            self.cargos = remaining_cargos + palletized_cargos
+            self.update_cargo_table()
+            
+            QMessageBox.information(self, "组托完成", 
+                f"已将选中货物组成 {pallet_count} 个托盘\n"
+                f"托盘规格: {pallet_l}×{pallet_w}cm")
+    
+    def load_pallets_to_container(self):
+        """装载托盘到集装箱"""
+        # 筛选托盘货物
+        pallet_cargos = [c for c in self.cargos if c.name.startswith("托盘")]
+        
+        if not pallet_cargos:
+            QMessageBox.warning(self, "警告", "没有托盘可装载，请先执行'小件组托'")
+            return
+        
+        if not self.container:
+            QMessageBox.warning(self, "警告", "请先选择集装箱")
+            return
+        
+        # 直接执行配载
+        self.start_loading()
+        
+        QMessageBox.information(self, "提示", 
+            f"已将 {len(pallet_cargos)} 个托盘装入集装箱")
     
     def clear_loading(self):
         """清除配载结果"""
@@ -1209,28 +2185,60 @@ class ContainerLoadingApp(QMainWindow):
         
         if filename:
             try:
+                # 计算重心信息
+                total_volume = sum(p.cargo.volume for p in self.placed_cargos)
+                total_weight = sum(p.cargo.weight for p in self.placed_cargos)
+                
+                # 计算重心
+                if total_weight > 0:
+                    cog_x = sum(p.center_x * p.cargo.weight for p in self.placed_cargos) / total_weight
+                    cog_y = sum(p.center_y * p.cargo.weight for p in self.placed_cargos) / total_weight
+                    cog_z = sum(p.center_z * p.cargo.weight for p in self.placed_cargos) / total_weight
+                    
+                    # 计算偏移
+                    center_x = self.container.length / 2
+                    center_y = self.container.width / 2
+                    offset_x = cog_x - center_x
+                    offset_y = cog_y - center_y
+                else:
+                    cog_x = cog_y = cog_z = 0
+                    offset_x = offset_y = 0
+                
                 if filename.endswith(".json"):
                     data = {
                         "container": {
                             "name": self.container.name,
+                            "type": self.container.container_type,
                             "length": self.container.length,
                             "width": self.container.width,
                             "height": self.container.height,
                             "max_weight": self.container.max_weight
                         },
-                        "placements": [
+                        "statistics": {
+                            "loaded_count": len(self.placed_cargos),
+                            "total_volume_m3": round(total_volume / 1000000, 3),
+                            "total_weight_kg": round(total_weight, 1),
+                            "volume_utilization": round((total_volume/self.container.volume)*100, 1),
+                            "weight_utilization": round((total_weight/self.container.max_weight)*100, 1)
+                        },
+                        "center_of_gravity": {
+                            "x": round(cog_x, 1),
+                            "y": round(cog_y, 1),
+                            "z": round(cog_z, 1),
+                            "offset_x": round(offset_x, 1),
+                            "offset_y": round(offset_y, 1)
+                        },
+                        "loading_steps": [
                             {
+                                "step": i + 1,
                                 "cargo_name": p.cargo.name,
-                                "dimensions": {
-                                    "length": p.cargo.length,
-                                    "width": p.cargo.width,
-                                    "height": p.cargo.height
-                                },
+                                "dimensions": f"{p.cargo.length}×{p.cargo.width}×{p.cargo.height}",
                                 "weight": p.cargo.weight,
-                                "position": {"x": p.x, "y": p.y, "z": p.z},
-                                "rotated": p.rotated
+                                "position": {"x": round(p.x, 1), "y": round(p.y, 1), "z": round(p.z, 1)},
+                                "rotated": p.rotated,
+                                "securing": self.get_securing_advice(p, i, len(self.placed_cargos))
                             }
-                            for p in self.placed_cargos
+                            for i, p in enumerate(self.placed_cargos)
                         ]
                     }
                     with open(filename, "w", encoding="utf-8") as f:
@@ -1242,23 +2250,42 @@ class ContainerLoadingApp(QMainWindow):
                         f.write("=" * 70 + "\n\n")
                         
                         f.write(f"集装箱类型: {self.container.name}\n")
+                        f.write(f"容器类别: {self.container.container_type}\n")
                         f.write(f"内部尺寸: {self.container.length} × {self.container.width} × {self.container.height} cm\n")
                         f.write(f"容积: {self.container.volume_cbm:.1f} m³\n")
                         f.write(f"最大载重: {self.container.max_weight:,} kg\n\n")
                         
                         f.write("-" * 70 + "\n")
-                        f.write("装载明细:\n")
+                        f.write("重心分析:\n")
+                        f.write("-" * 70 + "\n")
+                        f.write(f"  重心位置: X={cog_x:.1f}cm, Y={cog_y:.1f}cm, Z={cog_z:.1f}cm\n")
+                        f.write(f"  横向偏移: {offset_x:.1f}cm {'(偏左)' if offset_x < 0 else '(偏右)' if offset_x > 0 else '(居中)'}\n")
+                        f.write(f"  纵向偏移: {offset_y:.1f}cm {'(偏前)' if offset_y < 0 else '(偏后)' if offset_y > 0 else '(居中)'}\n")
+                        
+                        # 重心评估
+                        max_offset = min(self.container.length, self.container.width) * 0.1
+                        if abs(offset_x) < max_offset and abs(offset_y) < max_offset:
+                            f.write("  评估: ✓ 重心分布良好\n\n")
+                        else:
+                            f.write("  评估: ⚠ 重心偏移较大，建议调整\n\n")
+                        
+                        f.write("-" * 70 + "\n")
+                        f.write("装载步骤 (按顺序装载):\n")
                         f.write("-" * 70 + "\n\n")
                         
                         for i, p in enumerate(self.placed_cargos, 1):
-                            f.write(f"{i:3d}. {p.cargo.name}\n")
-                            f.write(f"     尺寸: {p.cargo.length} × {p.cargo.width} × {p.cargo.height} cm\n")
-                            f.write(f"     重量: {p.cargo.weight} kg\n")
-                            f.write(f"     位置: X={p.x:.1f}, Y={p.y:.1f}, Z={p.z:.1f} cm\n")
-                            f.write(f"     旋转: {'是' if p.rotated else '否'}\n\n")
+                            f.write(f"步骤 {i:3d}: {p.cargo.name}\n")
+                            f.write(f"  尺寸: {p.cargo.length} × {p.cargo.width} × {p.cargo.height} cm\n")
+                            f.write(f"  重量: {p.cargo.weight} kg\n")
+                            f.write(f"  位置: X={p.x:.1f}, Y={p.y:.1f}, Z={p.z:.1f} cm\n")
+                            f.write(f"  旋转: {'是' if p.rotated else '否'}\n")
+                            f.write(f"  加固: {self.get_securing_advice(p, i-1, len(self.placed_cargos))}\n\n")
                         
-                        total_volume = sum(p.cargo.volume for p in self.placed_cargos)
-                        total_weight = sum(p.cargo.weight for p in self.placed_cargos)
+                        f.write("-" * 70 + "\n")
+                        f.write("尾部加固建议:\n")
+                        f.write("-" * 70 + "\n")
+                        f.write(self.get_tail_securing_advice())
+                        f.write("\n")
                         
                         f.write("-" * 70 + "\n")
                         f.write("统计信息:\n")
@@ -1272,6 +2299,45 @@ class ContainerLoadingApp(QMainWindow):
                 QMessageBox.information(self, "成功", "配载方案导出成功")
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"导出失败: {e}")
+    
+    def get_securing_advice(self, placed_cargo, index: int, total: int) -> str:
+        """获取单个货物的加固建议"""
+        advice = []
+        
+        # 根据位置给出建议
+        if placed_cargo.z == 0:  # 底层
+            advice.append("底层固定")
+        
+        if placed_cargo.cargo.weight > 500:  # 重货
+            advice.append("使用绑带固定")
+        
+        if index >= total - 3:  # 最后几件
+            advice.append("尾部加固")
+        
+        # 根据是否可堆叠
+        if not placed_cargo.cargo.stackable:
+            advice.append("顶部勿压")
+        
+        return ", ".join(advice) if advice else "标准加固"
+    
+    def get_tail_securing_advice(self) -> str:
+        """获取尾部加固建议"""
+        advice = []
+        advice.append("  1. 使用木方或气囊填充尾部空隙")
+        advice.append("  2. 最后一排货物使用绑带横向固定")
+        advice.append("  3. 如有空隙超过30cm，建议使用充气袋填充")
+        advice.append("  4. 重货建议使用钢丝绳加固")
+        
+        # 根据容器类型添加特定建议
+        if hasattr(self, 'container') and self.container:
+            if self.container.container_type == "truck":
+                advice.append("  5. 货车运输建议使用防滑垫")
+                advice.append("  6. 注意轴重分布，重心尽量靠近车轴")
+            elif self.container.container_type == "shipping":
+                advice.append("  5. 海运建议预留膨胀空间")
+                advice.append("  6. 注意集装箱门端加固，防止开门时货物倾倒")
+        
+        return "\n".join(advice)
 
 
 def main():

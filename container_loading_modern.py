@@ -669,38 +669,68 @@ class Container3DView(QOpenGLWidget):
         glEnable(GL_LIGHTING)
     
     def draw_container_wireframe(self):
-        """绘制集装箱线框"""
+        """绘制集装箱（半透明面+线框）"""
         l, w, h = self.container.length, self.container.width, self.container.height
         
-        # 绘制半透明底面
         glDisable(GL_LIGHTING)
-        glColor4f(0.5, 0.5, 0.55, 0.3)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(GL_FALSE)  # 禁用深度写入，让透明面正确显示
+        
+        # 绘制半透明的所有面
         glBegin(GL_QUADS)
+        
+        # 底面 - 稍深一点
+        glColor4f(0.5, 0.5, 0.55, 0.35)
         glVertex3f(0, 0, 0)
         glVertex3f(l, 0, 0)
         glVertex3f(l, 0, w)
         glVertex3f(0, 0, w)
-        glEnd()
         
-        # 绘制半透明背面
-        glColor4f(0.4, 0.4, 0.45, 0.2)
-        glBegin(GL_QUADS)
-        # 后面
+        # 顶面 - 很透明
+        glColor4f(0.4, 0.4, 0.45, 0.15)
+        glVertex3f(0, h, 0)
+        glVertex3f(0, h, w)
+        glVertex3f(l, h, w)
+        glVertex3f(l, h, 0)
+        
+        # 前面 (z=0) - 半透明
+        glColor4f(0.45, 0.45, 0.5, 0.2)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, h, 0)
+        glVertex3f(l, h, 0)
+        glVertex3f(l, 0, 0)
+        
+        # 后面 (z=w) - 半透明
+        glColor4f(0.45, 0.45, 0.5, 0.2)
         glVertex3f(0, 0, w)
         glVertex3f(l, 0, w)
         glVertex3f(l, h, w)
         glVertex3f(0, h, w)
-        # 左面
+        
+        # 左面 (x=0) - 半透明
+        glColor4f(0.4, 0.4, 0.45, 0.2)
         glVertex3f(0, 0, 0)
         glVertex3f(0, 0, w)
         glVertex3f(0, h, w)
         glVertex3f(0, h, 0)
+        
+        # 右面 (x=l) - 半透明
+        glColor4f(0.4, 0.4, 0.45, 0.2)
+        glVertex3f(l, 0, 0)
+        glVertex3f(l, h, 0)
+        glVertex3f(l, h, w)
+        glVertex3f(l, 0, w)
+        
         glEnd()
         
-        # 绘制边框
-        glColor4f(0.7, 0.7, 0.75, 1.0)
+        glDepthMask(GL_TRUE)  # 恢复深度写入
+        
+        # 绘制边框线
+        glColor4f(0.8, 0.8, 0.85, 1.0)
         glLineWidth(2)
         
+        # 底面边框
         glBegin(GL_LINE_LOOP)
         glVertex3f(0, 0, 0)
         glVertex3f(l, 0, 0)
@@ -708,6 +738,7 @@ class Container3DView(QOpenGLWidget):
         glVertex3f(0, 0, w)
         glEnd()
         
+        # 顶面边框
         glBegin(GL_LINE_LOOP)
         glVertex3f(0, h, 0)
         glVertex3f(l, h, 0)
@@ -715,6 +746,7 @@ class Container3DView(QOpenGLWidget):
         glVertex3f(0, h, w)
         glEnd()
         
+        # 竖直边
         glBegin(GL_LINES)
         for x, z in [(0, 0), (l, 0), (l, w), (0, w)]:
             glVertex3f(x, 0, z)
@@ -990,10 +1022,17 @@ class ContainerLoadingApp(QMainWindow):
                 gridline-color: #3d3d3d;
             }
             QTableWidget::item {
-                padding: 8px;
+                padding: 4px 2px;
             }
             QTableWidget::item:selected {
                 background-color: #2196F3;
+            }
+            QTableWidget QLineEdit {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border: 1px solid #2196F3;
+                padding: 2px;
+                selection-background-color: #2196F3;
             }
             QHeaderView::section {
                 background-color: #2d2d2d;
@@ -1056,7 +1095,8 @@ class ContainerLoadingApp(QMainWindow):
         
         # 左侧面板
         left_panel = QWidget()
-        left_panel.setFixedWidth(420)
+        left_panel.setMinimumWidth(520)
+        left_panel.setMaximumWidth(580)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(12)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -1189,11 +1229,23 @@ class ContainerLoadingApp(QMainWindow):
         
         self.cargo_table = QTableWidget()
         self.cargo_table.setColumnCount(6)
-        self.cargo_table.setHorizontalHeaderLabels(["名称", "尺寸(cm)", "重量", "数量", "选项", "体积(m³)"])
-        self.cargo_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.cargo_table.setHorizontalHeaderLabels(["名称", "尺寸(cm)", "重量", "数量", "选项", "体积"])
+        # 设置各列宽度 - 全部固定宽度
+        self.cargo_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.cargo_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # 尺寸列自动拉伸
+        self.cargo_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.cargo_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.cargo_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.cargo_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.cargo_table.setColumnWidth(0, 60)   # 名称
+        self.cargo_table.setColumnWidth(2, 60)   # 重量
+        self.cargo_table.setColumnWidth(3, 35)   # 数量
+        self.cargo_table.setColumnWidth(4, 50)   # 选项
+        self.cargo_table.setColumnWidth(5, 45)   # 体积
         self.cargo_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.cargo_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.cargo_table.setAlternatingRowColors(True)
+        self.cargo_table.setMinimumHeight(180)
         list_layout.addWidget(self.cargo_table)
         
         # 列表操作按钮
@@ -1544,12 +1596,11 @@ class ContainerLoadingApp(QMainWindow):
         self.cargo_table.setRowCount(len(self.cargos))
         for i, cargo in enumerate(self.cargos):
             self.cargo_table.setItem(i, 0, QTableWidgetItem(cargo.name))
+            # 尺寸显示为整数，更紧凑
             self.cargo_table.setItem(i, 1, QTableWidgetItem(
-                f"{cargo.length}×{cargo.width}×{cargo.height}"))
-            self.cargo_table.setItem(i, 2, QTableWidgetItem(f"{cargo.weight} kg"))
+                f"{int(cargo.length)}×{int(cargo.width)}×{int(cargo.height)}"))
+            self.cargo_table.setItem(i, 2, QTableWidgetItem(f"{cargo.weight}kg"))
             self.cargo_table.setItem(i, 3, QTableWidgetItem(str(cargo.quantity)))
-            self.cargo_table.setItem(i, 4, QTableWidgetItem(
-                f"{cargo.total_volume/1000000:.3f}"))
             
             # 选项列 - 显示图标表示各种属性
             options = []
@@ -1557,11 +1608,15 @@ class ContainerLoadingApp(QMainWindow):
                 options.append("🔄")  # 可旋转
             if cargo.bottom_only:
                 options.append("⬇")  # 仅底层
-            if cargo.priority > 1:
+            if cargo.priority > 0:
                 options.append(f"P{cargo.priority}")  # 优先级
             if cargo.group_id:
-                options.append(f"G{cargo.group_id}")  # 分组
-            self.cargo_table.setItem(i, 5, QTableWidgetItem(" ".join(options)))
+                options.append(f"{cargo.group_id}")  # 分组
+            self.cargo_table.setItem(i, 4, QTableWidgetItem("".join(options)))
+            
+            # 体积列
+            self.cargo_table.setItem(i, 5, QTableWidgetItem(
+                f"{cargo.total_volume/1000000:.2f}"))
     
     def delete_cargo(self):
         """删除选中货物"""
@@ -1591,15 +1646,35 @@ class ContainerLoadingApp(QMainWindow):
                 else:
                     with open(filename, "r", encoding="utf-8") as f:
                         data = json.load(f)
+                    
                     self.cargos = []
-                    for item in data:
+                    self.cargo_groups = []
+                    group_map = {}
+                    
+                    # 处理货物数据
+                    cargo_list = data.get('cargos', data) if isinstance(data, dict) else data
+                    for item in cargo_list:
                         if 'color' in item and isinstance(item['color'], list):
                             item['color'] = tuple(item['color'])
                         else:
                             item['color'] = self.get_next_color()
-                        self.cargos.append(Cargo(**item))
+                        cargo = Cargo(**item)
+                        self.cargos.append(cargo)
+                        
+                        # 记录分组
+                        if cargo.group_id:
+                            if cargo.group_id not in group_map:
+                                group_map[cargo.group_id] = []
+                            group_map[cargo.group_id].append(cargo.id)
+                    
+                    # 创建分组对象
+                    for gid, cargo_ids in group_map.items():
+                        group = CargoGroup(id=gid, name=f"分组{gid}", cargo_ids=cargo_ids)
+                        self.cargo_groups.append(group)
+                    
                     self.update_cargo_table()
-                    QMessageBox.information(self, "成功", f"成功导入 {len(self.cargos)} 种货物")
+                    group_info = f"，{len(self.cargo_groups)}个分组" if self.cargo_groups else ""
+                    QMessageBox.information(self, "成功", f"成功导入 {len(self.cargos)} 种货物{group_info}")
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"导入失败: {e}")
     
@@ -1609,7 +1684,9 @@ class ContainerLoadingApp(QMainWindow):
         ws = wb.active
         
         self.cargos = []
+        self.cargo_groups = []
         self.color_index = 0
+        group_map = {}  # 记录分组ID到货物ID的映射
         
         # 跳过标题行，从第2行开始读取
         for row in ws.iter_rows(min_row=2, values_only=True):
@@ -1626,6 +1703,11 @@ class ContainerLoadingApp(QMainWindow):
             if len(row) > 6 and row[6] is not None:
                 stackable = str(row[6]).lower() in ('true', '是', '1', 'yes')
             
+            # 读取分组信息 (第11列，索引10)
+            group_id = None
+            if len(row) > 10 and row[10]:
+                group_id = str(row[10]).strip()
+            
             cargo = Cargo(
                 name=name,
                 length=length,
@@ -1634,12 +1716,29 @@ class ContainerLoadingApp(QMainWindow):
                 weight=weight,
                 quantity=quantity,
                 stackable=stackable,
+                group_id=group_id,
                 color=self.get_next_color()
             )
             self.cargos.append(cargo)
+            
+            # 记录分组
+            if group_id:
+                if group_id not in group_map:
+                    group_map[group_id] = []
+                group_map[group_id].append(cargo.id)
+        
+        # 创建分组对象
+        for gid, cargo_ids in group_map.items():
+            group = CargoGroup(
+                id=gid,
+                name=f"分组{gid}",
+                cargo_ids=cargo_ids
+            )
+            self.cargo_groups.append(group)
         
         self.update_cargo_table()
-        QMessageBox.information(self, "成功", f"成功从Excel导入 {len(self.cargos)} 种货物")
+        group_info = f"，{len(self.cargo_groups)}个分组" if self.cargo_groups else ""
+        QMessageBox.information(self, "成功", f"成功从Excel导入 {len(self.cargos)} 种货物{group_info}")
     
     def export_cargos(self):
         """导出货物"""
@@ -1684,7 +1783,7 @@ class ContainerLoadingApp(QMainWindow):
         )
         
         # 写入标题行
-        headers = ["货物名称", "长度(cm)", "宽度(cm)", "高度(cm)", "重量(kg)", "数量", "可堆叠", "单件体积(m³)", "总体积(m³)", "总重量(kg)"]
+        headers = ["货物名称", "长度(cm)", "宽度(cm)", "高度(cm)", "重量(kg)", "数量", "可堆叠", "单件体积(m³)", "总体积(m³)", "总重量(kg)", "分组"]
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col, value=header)
             cell.font = header_font
@@ -1704,9 +1803,10 @@ class ContainerLoadingApp(QMainWindow):
             ws.cell(row=row, column=8, value=round(cargo.volume / 1000000, 4)).border = thin_border
             ws.cell(row=row, column=9, value=round(cargo.total_volume / 1000000, 4)).border = thin_border
             ws.cell(row=row, column=10, value=cargo.total_weight).border = thin_border
+            ws.cell(row=row, column=11, value=cargo.group_id or "").border = thin_border
         
         # 调整列宽
-        column_widths = [15, 12, 12, 12, 12, 10, 10, 14, 14, 14]
+        column_widths = [15, 12, 12, 12, 12, 10, 10, 14, 14, 14, 10]
         for col, width in enumerate(column_widths, 1):
             ws.column_dimensions[chr(64 + col)].width = width
         
@@ -1725,11 +1825,11 @@ class ContainerLoadingApp(QMainWindow):
         
         # 收集启用的规则
         active_rules = []
-        for row in range(self.rules_table.rowCount()):
-            checkbox = self.rules_table.cellWidget(row, 0)
+        for row in range(self.rules_list.rowCount()):
+            checkbox = self.rules_list.cellWidget(row, 0)
             if checkbox and checkbox.isChecked():
-                rule_name = self.rules_table.item(row, 1).text()
-                priority = int(self.rules_table.item(row, 2).text())
+                rule_name = self.rules_list.item(row, 1).text()
+                priority = int(self.rules_list.item(row, 2).text())
                 
                 if rule_name == "相同尺寸优先":
                     active_rules.append((priority, RuleSameSizeFirst()))
@@ -1747,7 +1847,7 @@ class ContainerLoadingApp(QMainWindow):
         rules = [r[1] for r in active_rules]
         
         # 执行配载
-        algorithm = LoadingAlgorithm(self.container, rules=rules, groups=self.cargo_groups)
+        algorithm = LoadingAlgorithm(self.container, rules=rules, cargo_groups=self.cargo_groups)
         loaded, not_loaded = algorithm.load_all(self.cargos)
         
         self.placed_cargos = loaded
@@ -1769,9 +1869,18 @@ class ContainerLoadingApp(QMainWindow):
         self.weight_label.setText(f"{stats['weight_utilization']:.1f}%")
         
         # 更新重心显示
-        cog = stats.get('center_of_gravity', {'x': 0, 'y': 0, 'z': 0, 'offset_x': 0, 'offset_y': 0, 'status': '无数据'})
-        cog_text = f"重心位置: X={cog['x']:.1f}, Y={cog['y']:.1f}, Z={cog['z']:.1f} cm\n"
-        cog_text += f"偏移: 横向 {cog['offset_x']:.1f}cm, 纵向 {cog['offset_y']:.1f}cm | 状态: {cog['status']}"
+        cog_tuple = stats.get('center_of_gravity', (0, 0, 0))
+        offset_tuple = stats.get('center_offset', (0, 0, 0))
+        
+        # 判断重心状态
+        max_offset = min(self.container.length, self.container.width) * 0.1
+        if abs(offset_tuple[0]) < max_offset and abs(offset_tuple[1]) < max_offset:
+            cog_status = "良好"
+        else:
+            cog_status = "偏移较大"
+        
+        cog_text = f"重心位置: X={cog_tuple[0]:.1f}, Y={cog_tuple[1]:.1f}, Z={cog_tuple[2]:.1f} cm\n"
+        cog_text += f"偏移: 横向 {offset_tuple[0]:.1f}cm, 纵向 {offset_tuple[1]:.1f}cm | 状态: {cog_status}"
         self.cog_label.setText(cog_text)
         
         # 更新装载步骤表格
@@ -1783,14 +1892,14 @@ class ContainerLoadingApp(QMainWindow):
                 f"配载完成！\n\n"
                 f"空间利用率: {stats['volume_utilization']:.1f}%\n"
                 f"载重利用率: {stats['weight_utilization']:.1f}%\n"
-                f"重心状态: {cog['status']}\n\n"
+                f"重心状态: {cog_status}\n\n"
                 f"有 {len(not_loaded)} 件货物无法装入:\n{cargo_names}")
         else:
             QMessageBox.information(self, "配载完成",
                 f"所有货物已成功装载！\n\n"
                 f"空间利用率: {stats['volume_utilization']:.1f}%\n"
                 f"载重利用率: {stats['weight_utilization']:.1f}%\n"
-                f"重心状态: {cog['status']}")
+                f"重心状态: {cog_status}")
     
     def update_steps_table(self, steps: list):
         """更新装载步骤表格"""
@@ -1814,23 +1923,23 @@ class ContainerLoadingApp(QMainWindow):
         # 生成新的分组ID
         group_id = f"G{len(self.cargo_groups) + 1}"
         
-        # 获取选中的货物
-        group_cargos = []
+        # 获取选中的货物ID列表
+        cargo_ids = []
         for row in selected_rows:
             cargo = self.cargos[row]
             cargo.group_id = group_id
-            group_cargos.append(cargo)
+            cargo_ids.append(cargo.id)
         
         # 创建分组对象
         group = CargoGroup(
             id=group_id,
             name=f"分组{len(self.cargo_groups) + 1}",
-            cargos=group_cargos
+            cargo_ids=cargo_ids
         )
         self.cargo_groups.append(group)
         
         self.update_cargo_table()
-        QMessageBox.information(self, "成功", f"已创建分组 {group_id}，包含 {len(group_cargos)} 个货物")
+        QMessageBox.information(self, "成功", f"已创建分组 {group_id}，包含 {len(cargo_ids)} 个货物")
     
     def ungroup_cargo(self):
         """取消货物分组"""
@@ -1848,9 +1957,9 @@ class ContainerLoadingApp(QMainWindow):
             if cargo.group_id:
                 # 从分组中移除
                 for group in self.cargo_groups:
-                    if cargo in group.cargos:
-                        group.cargos.remove(cargo)
-                        if not group.cargos:  # 如果分组为空，删除分组
+                    if cargo.id in group.cargo_ids:
+                        group.cargo_ids.remove(cargo.id)
+                        if not group.cargo_ids:  # 如果分组为空，删除分组
                             self.cargo_groups.remove(group)
                         break
                 cargo.group_id = None

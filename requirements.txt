@@ -1,0 +1,5 @@
+PyQt6>=6.4.0
+PyOpenGL>=3.1.6
+PyOpenGL-accelerate>=3.1.6
+numpy>=1.21.0
+openpyxl>=3.0.0

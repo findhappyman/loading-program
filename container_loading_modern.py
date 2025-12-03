@@ -673,10 +673,17 @@ class Container3DView(QOpenGLWidget):
             self.container = result.container
             self.placed_cargos = result.placed_cargos
         else:
-            # 显示第一个集装箱作为默认
+            # 全部概览模式 - 使用第一个集装箱作为参考
             if self.all_container_results:
                 self.container = self.all_container_results[0].container
-                self.placed_cargos = self.all_container_results[0].placed_cargos
+                # 合并所有货物用于统计，但实际绘制在 paintGL 中单独处理
+                self.placed_cargos = []
+                for result in self.all_container_results:
+                    self.placed_cargos.extend(result.placed_cargos)
+    
+    def is_overview_mode(self) -> bool:
+        """是否处于全局概览模式"""
+        return self.current_container_index < 0 and len(self.all_container_results) >= 1
     
     def initializeGL(self):
         """初始化OpenGL"""
@@ -712,6 +719,14 @@ class Container3DView(QOpenGLWidget):
         if not self.container:
             return
         
+        # 判断是否为全局概览模式
+        if self.is_overview_mode():
+            self.paintGL_overview()
+        else:
+            self.paintGL_single()
+    
+    def paintGL_single(self):
+        """渲染单个集装箱场景"""
         # 计算观察距离
         max_dim = max(self.container.length, self.container.width, self.container.height)
         distance = max_dim * 2.5 / self.zoom
@@ -740,6 +755,131 @@ class Container3DView(QOpenGLWidget):
         # 如果处于拖拽模式且有选中货物，显示拖拽轴
         if self.drag_mode and 0 <= self.selected_cargo_index < len(self.placed_cargos):
             self.draw_drag_axes(self.placed_cargos[self.selected_cargo_index])
+    
+    def paintGL_overview(self):
+        """渲染全局概览模式 - 显示所有集装箱并排"""
+        num_containers = len(self.all_container_results)
+        if num_containers == 0:
+            return
+        
+        # 计算所有集装箱的布局
+        # 集装箱并排放置，中间留有间隙
+        spacing = 200  # 集装箱之间的间隙 (cm) - 增加间距便于区分
+        
+        # 计算总宽度和最大尺寸
+        total_length = 0
+        max_height = 0
+        max_width = 0
+        
+        for result in self.all_container_results:
+            c = result.container
+            total_length += c.length
+            max_height = max(max_height, c.height)
+            max_width = max(max_width, c.width)
+        
+        total_length += spacing * (num_containers - 1)
+        
+        # 计算观察距离 - 需要能看到所有集装箱，增加距离系数
+        max_dim = max(total_length, max_width * 2, max_height * 2)
+        distance = max_dim * 2.5 / self.zoom
+        
+        # 设置相机
+        glTranslatef(self.pan_x, self.pan_y, -distance)
+        glRotatef(self.rotation_x, 1, 0, 0)
+        glRotatef(self.rotation_y, 0, 1, 0)
+        
+        # 将原点移到所有集装箱的中心
+        glTranslatef(-total_length/2, -max_height/2, -max_width/2)
+        
+        # 绘制扩展的地面网格
+        self.draw_overview_grid(total_length, max_width)
+        
+        # 依次绘制每个集装箱
+        x_offset = 0
+        for idx, result in enumerate(self.all_container_results):
+            glPushMatrix()
+            glTranslatef(x_offset, 0, 0)
+            
+            # 直接使用result中的数据绘制，不修改self的属性
+            container = result.container
+            placed_cargos = result.placed_cargos
+            
+            # 绘制集装箱线框
+            self.draw_container_wireframe_at(container)
+            
+            # 绘制货物
+            for i, placed in enumerate(placed_cargos):
+                self.draw_cargo(placed, i)
+            
+            # 绘制集装箱编号标签
+            self.draw_container_label(idx + 1, container)
+            
+            glPopMatrix()
+            
+            x_offset += container.length + spacing
+        
+        # 绘制坐标轴
+        self.draw_axes()
+    
+    def draw_overview_grid(self, total_length: float, max_width: float):
+        """绘制全局概览的地面网格"""
+        glDisable(GL_LIGHTING)
+        glColor4f(0.3, 0.3, 0.35, 0.5)
+        glLineWidth(1)
+        
+        padding = 100  # 网格边距
+        step = 100  # 100cm 网格间距
+        
+        glBegin(GL_LINES)
+        x = -padding
+        while x <= total_length + padding:
+            glVertex3f(x, 0, -padding)
+            glVertex3f(x, 0, max_width + padding)
+            x += step
+        
+        z = -padding
+        while z <= max_width + padding:
+            glVertex3f(-padding, 0, z)
+            glVertex3f(total_length + padding, 0, z)
+            z += step
+        glEnd()
+        
+        glEnable(GL_LIGHTING)
+    
+    def draw_container_label(self, index: int, container):
+        """绘制集装箱编号标签（使用简单的3D位置标记）"""
+        # 在集装箱顶部中心位置绘制标记
+        glDisable(GL_LIGHTING)
+        
+        cx = container.length / 2
+        cy = container.height + 20  # 在顶部上方
+        cz = container.width / 2
+        
+        # 绘制标记点
+        glPointSize(15)
+        glBegin(GL_POINTS)
+        # 使用不同颜色区分不同集装箱
+        colors = [
+            (1.0, 0.4, 0.4),   # 红
+            (0.4, 1.0, 0.4),   # 绿
+            (0.4, 0.4, 1.0),   # 蓝
+            (1.0, 1.0, 0.4),   # 黄
+            (1.0, 0.4, 1.0),   # 紫
+            (0.4, 1.0, 1.0),   # 青
+        ]
+        color = colors[(index - 1) % len(colors)]
+        glColor3f(*color)
+        glVertex3f(cx, cy, cz)
+        glEnd()
+        
+        # 绘制编号指示线
+        glLineWidth(2)
+        glBegin(GL_LINES)
+        glVertex3f(cx, container.height, cz)
+        glVertex3f(cx, cy, cz)
+        glEnd()
+        
+        glEnable(GL_LIGHTING)
     
     def draw_grid(self):
         """绘制地面网格"""
@@ -823,6 +963,93 @@ class Container3DView(QOpenGLWidget):
         glEnd()
         
         glDepthMask(GL_TRUE)  # 恢复深度写入
+        
+        # 绘制边框线
+        glColor4f(0.8, 0.8, 0.85, 1.0)
+        glLineWidth(2)
+        
+        # 底面边框
+        glBegin(GL_LINE_LOOP)
+        glVertex3f(0, 0, 0)
+        glVertex3f(l, 0, 0)
+        glVertex3f(l, 0, w)
+        glVertex3f(0, 0, w)
+        glEnd()
+        
+        # 顶面边框
+        glBegin(GL_LINE_LOOP)
+        glVertex3f(0, h, 0)
+        glVertex3f(l, h, 0)
+        glVertex3f(l, h, w)
+        glVertex3f(0, h, w)
+        glEnd()
+        
+        # 竖直边
+        glBegin(GL_LINES)
+        for x, z in [(0, 0), (l, 0), (l, w), (0, w)]:
+            glVertex3f(x, 0, z)
+            glVertex3f(x, h, z)
+        glEnd()
+        
+        glEnable(GL_LIGHTING)
+    
+    def draw_container_wireframe_at(self, container):
+        """绘制指定集装箱（半透明面+线框）- 用于概览模式"""
+        l, w, h = container.length, container.width, container.height
+        
+        glDisable(GL_LIGHTING)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(GL_FALSE)
+        
+        # 绘制半透明的所有面
+        glBegin(GL_QUADS)
+        
+        # 底面
+        glColor4f(0.5, 0.5, 0.55, 0.35)
+        glVertex3f(0, 0, 0)
+        glVertex3f(l, 0, 0)
+        glVertex3f(l, 0, w)
+        glVertex3f(0, 0, w)
+        
+        # 顶面
+        glColor4f(0.4, 0.4, 0.45, 0.15)
+        glVertex3f(0, h, 0)
+        glVertex3f(0, h, w)
+        glVertex3f(l, h, w)
+        glVertex3f(l, h, 0)
+        
+        # 前面
+        glColor4f(0.45, 0.45, 0.5, 0.2)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, h, 0)
+        glVertex3f(l, h, 0)
+        glVertex3f(l, 0, 0)
+        
+        # 后面
+        glColor4f(0.45, 0.45, 0.5, 0.2)
+        glVertex3f(0, 0, w)
+        glVertex3f(l, 0, w)
+        glVertex3f(l, h, w)
+        glVertex3f(0, h, w)
+        
+        # 左面
+        glColor4f(0.4, 0.4, 0.45, 0.2)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, 0, w)
+        glVertex3f(0, h, w)
+        glVertex3f(0, h, 0)
+        
+        # 右面
+        glColor4f(0.4, 0.4, 0.45, 0.2)
+        glVertex3f(l, 0, 0)
+        glVertex3f(l, h, 0)
+        glVertex3f(l, h, w)
+        glVertex3f(l, 0, w)
+        
+        glEnd()
+        
+        glDepthMask(GL_TRUE)
         
         # 绘制边框线
         glColor4f(0.8, 0.8, 0.85, 1.0)
@@ -978,30 +1205,26 @@ class Container3DView(QOpenGLWidget):
         glEnable(GL_LIGHTING)
     
     def hit_test(self, mouse_x: int, mouse_y: int) -> int:
-        """碰撞检测 - 返回点击位置的货物索引，-1表示未命中"""
+        """碰撞检测 - 使用颜色拾取返回点击位置的货物索引，-1表示未命中"""
         if not self.placed_cargos or not self.container:
             return -1
         
-        # 使用OpenGL选择模式进行拾取
-        viewport = glGetIntegerv(GL_VIEWPORT)
+        # 使用颜色拾取方法 - 更可靠
+        self.makeCurrent()
         
-        glSelectBuffer(512)
-        glRenderMode(GL_SELECT)
+        # 保存当前状态
+        glPushAttrib(GL_ALL_ATTRIB_BITS)
         
-        glMatrixMode(GL_PROJECTION)
-        glPushMatrix()
+        # 清除缓冲区
+        glClearColor(0, 0, 0, 1)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        glDisable(GL_LIGHTING)
+        glDisable(GL_BLEND)
+        glDisable(GL_DITHER)
+        glDisable(GL_TEXTURE_2D)
+        
+        # 设置视图变换 (与 paintGL_single 相同)
         glLoadIdentity()
-        
-        # 设置拾取区域
-        gluPickMatrix(mouse_x, viewport[3] - mouse_y, 5, 5, viewport)
-        
-        aspect = viewport[2] / viewport[3] if viewport[3] > 0 else 1
-        gluPerspective(45, aspect, 0.1, 10000)
-        
-        glMatrixMode(GL_MODELVIEW)
-        glLoadIdentity()
-        
-        # 设置视图变换
         max_dim = max(self.container.length, self.container.width, self.container.height)
         distance = max_dim * 2.5 / self.zoom
         
@@ -1010,30 +1233,37 @@ class Container3DView(QOpenGLWidget):
         glRotatef(self.rotation_y, 0, 1, 0)
         glTranslatef(-self.container.length/2, -self.container.height/2, -self.container.width/2)
         
-        glInitNames()
-        glPushName(0)
-        
-        # 绘制可拾取的货物
+        # 用唯一颜色绘制每个货物
         for i, placed in enumerate(self.placed_cargos):
-            glLoadName(i)
+            # 将索引编码为颜色 (索引+1，因为0是背景)
+            idx = i + 1
+            r = (idx & 0xFF) / 255.0
+            g = ((idx >> 8) & 0xFF) / 255.0
+            b = ((idx >> 16) & 0xFF) / 255.0
+            glColor3f(r, g, b)
             self.draw_cargo_for_picking(placed)
         
-        glMatrixMode(GL_PROJECTION)
-        glPopMatrix()
-        glMatrixMode(GL_MODELVIEW)
+        glFlush()
+        glFinish()
         
-        hits = glRenderMode(GL_RENDER)
+        # 读取鼠标位置的像素颜色
+        viewport = glGetIntegerv(GL_VIEWPORT)
+        pixel_y = viewport[3] - mouse_y  # OpenGL Y轴翻转
         
-        if hits:
-            # 返回最近的货物
-            min_depth = float('inf')
-            selected = -1
-            for hit in hits:
-                min_z, max_z, names = hit
-                if names and min_z < min_depth:
-                    min_depth = min_z
-                    selected = names[0]
-            return selected
+        pixel = glReadPixels(mouse_x, pixel_y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE)
+        
+        # 恢复状态
+        glPopAttrib()
+        
+        # 重新绘制正常场景
+        self.update()
+        
+        # 解码颜色为索引
+        if pixel:
+            r, g, b = pixel[0], pixel[1], pixel[2]
+            idx = r + (g << 8) + (b << 16)
+            if idx > 0 and idx <= len(self.placed_cargos):
+                return idx - 1
         
         return -1
     
@@ -1771,6 +2001,8 @@ class ContainerLoadingApp(QMainWindow):
         self.cargo_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.cargo_table.setAlternatingRowColors(True)
         self.cargo_table.setMinimumHeight(180)
+        # 连接单元格编辑信号
+        self.cargo_table.cellChanged.connect(self.on_cargo_table_cell_changed)
         list_layout.addWidget(self.cargo_table)
         
         # 列表操作按钮
@@ -2173,6 +2405,9 @@ class ContainerLoadingApp(QMainWindow):
     
     def update_cargo_table(self):
         """更新货物表格"""
+        # 暂时阻止信号，避免触发 cellChanged
+        self.cargo_table.blockSignals(True)
+        
         self.cargo_table.setRowCount(len(self.cargos))
         for i, cargo in enumerate(self.cargos):
             self.cargo_table.setItem(i, 0, QTableWidgetItem(cargo.name))
@@ -2197,6 +2432,46 @@ class ContainerLoadingApp(QMainWindow):
             # 体积列
             self.cargo_table.setItem(i, 5, QTableWidgetItem(
                 f"{cargo.total_volume/1000000:.2f}"))
+        
+        # 恢复信号
+        self.cargo_table.blockSignals(False)
+    
+    def on_cargo_table_cell_changed(self, row: int, column: int):
+        """处理货物表格单元格编辑"""
+        if row < 0 or row >= len(self.cargos):
+            return
+        
+        cargo = self.cargos[row]
+        item = self.cargo_table.item(row, column)
+        if not item:
+            return
+        
+        text = item.text().strip()
+        
+        try:
+            if column == 0:  # 名称
+                cargo.name = text
+            elif column == 2:  # 重量
+                # 移除 "kg" 后缀
+                weight_str = text.replace("kg", "").replace("Kg", "").replace("KG", "").strip()
+                cargo.weight = float(weight_str)
+            elif column == 3:  # 数量
+                new_qty = int(text)
+                if new_qty > 0:
+                    cargo.quantity = new_qty
+                    # 更新体积列
+                    self.cargo_table.blockSignals(True)
+                    self.cargo_table.setItem(row, 5, QTableWidgetItem(
+                        f"{cargo.total_volume/1000000:.2f}"))
+                    self.cargo_table.blockSignals(False)
+                else:
+                    # 恢复原值
+                    self.cargo_table.blockSignals(True)
+                    self.cargo_table.setItem(row, 3, QTableWidgetItem(str(cargo.quantity)))
+                    self.cargo_table.blockSignals(False)
+        except ValueError:
+            # 输入无效，恢复原值
+            self.update_cargo_table()
     
     def delete_cargo(self):
         """删除选中货物"""
@@ -3154,10 +3429,9 @@ class ContainerLoadingApp(QMainWindow):
             return
         
         if index == 0:
-            # 全部概览 - 显示第一个集装箱
-            if self.container_results:
-                self.gl_widget.show_container(0)
-                self.update_stats_for_container(-1)  # 显示总体统计
+            # 全部概览 - 使用 -1 表示概览模式
+            self.gl_widget.show_container(-1)
+            self.update_stats_for_container(-1)  # 显示总体统计
         else:
             # 显示特定集装箱
             container_index = index - 1

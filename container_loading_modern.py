@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-集装箱配载软件 (Container Loading Software) - 现代UI版本 v4.0
+集装箱配载软件 (Container Loading Software) v0.5
 使用 PyQt6 + OpenGL 实现可拖动旋转的3D视图
 支持多集装箱、装载图导出、拖拽调整等高级功能
+
+作者: Henry Xue
+版本: 0.5
 """
 
 import sys
@@ -29,6 +32,37 @@ try:
     PIL_SUPPORT = True
 except ImportError:
     PIL_SUPPORT = False
+
+# PDF导出支持
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage, PageBreak
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    PDF_SUPPORT = True
+    # 注册中文字体
+    try:
+        # Windows 系统字体路径
+        font_paths = [
+            "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑
+            "C:/Windows/Fonts/simsun.ttc",  # 宋体
+            "C:/Windows/Fonts/simhei.ttf",  # 黑体
+        ]
+        font_registered = False
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
+                font_registered = True
+                break
+        if not font_registered:
+            PDF_SUPPORT = False
+    except:
+        PDF_SUPPORT = False
+except ImportError:
+    PDF_SUPPORT = False
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -734,11 +768,13 @@ class LoadingAlgorithm:
             
             steps.append({
                 "step": p.step_number,
+                "container": "-",  # 单集装箱模式
                 "cargo_name": p.cargo.name,
-                "position": f"X:{p.x:.0f} Y:{p.y:.0f} Z:{p.z:.0f}",
+                "dimensions": f"{p.actual_length:.0f}×{p.actual_width:.0f}×{p.cargo.height:.0f}",
+                "position": f"({p.x:.0f}, {p.y:.0f}, {p.z:.0f})",
                 "position_desc": " ".join(position_desc),
                 "rotated": "是" if p.rotated else "否",
-                "size": f"{p.actual_length:.0f}×{p.actual_width:.0f}×{p.cargo.height:.0f}"
+                "securing": "标准"
             })
         
         return steps
@@ -812,7 +848,7 @@ class Container3DView(QOpenGLWidget):
         """设置多集装箱结果"""
         self.all_container_results = results
         if results:
-            self.current_container_index = 0  # 默认显示第一个
+            self.current_container_index = -1  # 默认显示全部概览
             self.update_display()
         else:
             self.current_container_index = -1
@@ -890,9 +926,9 @@ class Container3DView(QOpenGLWidget):
     
     def paintGL_single(self):
         """渲染单个集装箱场景"""
-        # 计算观察距离
+        # 计算观察距离 - 使用1.8让视图更近
         max_dim = max(self.container.length, self.container.width, self.container.height)
-        distance = max_dim * 2.5 / self.zoom
+        distance = max_dim * 1.8 / self.zoom
         
         # 设置相机
         glTranslatef(self.pan_x, self.pan_y, -distance)
@@ -942,9 +978,9 @@ class Container3DView(QOpenGLWidget):
         
         total_length += spacing * (num_containers - 1)
         
-        # 计算观察距离 - 需要能看到所有集装箱，增加距离系数
+        # 计算观察距离 - 需要能看到所有集装箱
         max_dim = max(total_length, max_width * 2, max_height * 2)
-        distance = max_dim * 2.5 / self.zoom
+        distance = max_dim * 1.8 / self.zoom
         
         # 设置相机
         glTranslatef(self.pan_x, self.pan_y, -distance)
@@ -1043,6 +1079,62 @@ class Container3DView(QOpenGLWidget):
         glEnd()
         
         glEnable(GL_LIGHTING)
+    
+    def capture_image(self, width: int = 800, height: int = 600) -> 'QImage':
+        """捕获当前3D视图为图片"""
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtGui import QImage
+        
+        # 保存当前尺寸
+        old_size = self.size()
+        
+        # 调整到目标尺寸并渲染
+        self.resize(width, height)
+        self.makeCurrent()
+        self.resizeGL(width, height)
+        self.paintGL()
+        
+        # 捕获帧缓冲
+        image = self.grabFramebuffer()
+        
+        # 恢复尺寸
+        self.resize(old_size)
+        self.makeCurrent()
+        self.resizeGL(old_size.width(), old_size.height())
+        self.update()
+        
+        return image
+    
+    def capture_isometric_image(self, width: int = 800, height: int = 600) -> 'QImage':
+        """捕获等轴测视角的图片"""
+        from PyQt6.QtGui import QImage
+        
+        # 保存当前视角
+        old_rot_x = self.rotation_x
+        old_rot_y = self.rotation_y
+        old_zoom = self.zoom
+        old_pan_x = self.pan_x
+        old_pan_y = self.pan_y
+        
+        # 设置等轴测视角 (30度俯视, 45度侧视)
+        self.rotation_x = 30
+        self.rotation_y = 45
+        self.zoom = 1.2  # 稍微拉近
+        self.pan_x = 0
+        self.pan_y = 0
+        
+        # 捕获图片
+        image = self.capture_image(width, height)
+        
+        # 恢复视角
+        self.rotation_x = old_rot_x
+        self.rotation_y = old_rot_y
+        self.zoom = old_zoom
+        self.pan_x = old_pan_x
+        self.pan_y = old_pan_y
+        
+        self.update()
+        return image
     
     def draw_grid(self):
         """绘制地面网格"""
@@ -1458,15 +1550,17 @@ class Container3DView(QOpenGLWidget):
         self.last_mouse_pos = event.pos()
         self.mouse_button = event.button()
         
-        # 拖拽模式下的选择逻辑
-        if self.drag_mode and event.button() == Qt.MouseButton.LeftButton:
-            # 尝试选择货物
+        # 左键点击尝试选择货物（无论是否在拖拽模式）
+        if event.button() == Qt.MouseButton.LeftButton:
             try:
                 hit_index = self.hit_test(event.pos().x(), event.pos().y())
                 if hit_index >= 0:
                     self.selected_cargo_index = hit_index
-                    self.dragging = True
-                    self.drag_start_pos = event.pos()
+                    # 拖拽模式下才启用拖动
+                    if self.drag_mode:
+                        self.dragging = True
+                        self.drag_start_pos = event.pos()
+                    # 无论是否拖拽模式都触发选中回调
                     if self.on_cargo_selected:
                         self.on_cargo_selected(hit_index)
                     self.update()
@@ -1474,7 +1568,7 @@ class Container3DView(QOpenGLWidget):
                     self.selected_cargo_index = -1
                     self.update()
             except Exception:
-                # 如果选择失败，使用简单的索引选择
+                # 如果选择失败，忽略错误
                 pass
     
     def mouseMoveEvent(self, event):
@@ -1609,13 +1703,48 @@ class ModernButton(QPushButton):
 
 
 class LoadingImageGenerator:
-    """装载图生成器"""
+    """装载图生成器 - 支持中文和多视角"""
     
-    def __init__(self, container: Container, placed_cargos: List[PlacedCargo]):
+    def __init__(self, container: Container, placed_cargos: List[PlacedCargo], view_3d: 'Container3DView' = None):
         self.container = container
         self.placed_cargos = placed_cargos
-        self.margin = 50  # 边距
+        self.view_3d = view_3d  # 3D视图引用，用于截图
+        self.margin = 60  # 边距
         self.scale = 1.0  # 比例尺
+        self.font = None
+        self.title_font = None
+        self._load_fonts()
+    
+    def _load_fonts(self):
+        """加载中文字体"""
+        if not PIL_SUPPORT:
+            return
+        
+        # 尝试加载中文字体
+        font_paths = [
+            "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑
+            "C:/Windows/Fonts/simsun.ttc",  # 宋体
+            "C:/Windows/Fonts/simhei.ttf",  # 黑体
+            "/System/Library/Fonts/PingFang.ttc",  # macOS
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # Linux
+        ]
+        
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    self.font = ImageFont.truetype(font_path, 12)
+                    self.title_font = ImageFont.truetype(font_path, 16)
+                    return
+                except:
+                    continue
+        
+        # 使用默认字体
+        try:
+            self.font = ImageFont.truetype("arial.ttf", 12)
+            self.title_font = ImageFont.truetype("arial.ttf", 16)
+        except:
+            self.font = ImageFont.load_default()
+            self.title_font = self.font
     
     def calculate_scale(self, max_width: int, max_height: int, container_dim1: float, container_dim2: float):
         """计算适合图像尺寸的比例尺"""
@@ -1662,26 +1791,16 @@ class LoadingImageGenerator:
             draw.rectangle([x, y, x + w, y + h], fill=color, outline=(50, 50, 50), width=1)
             
             # 添加货物名称（如果空间足够）
-            if w > 30 and h > 15:
-                try:
-                    font = ImageFont.truetype("arial.ttf", 10)
-                except:
-                    font = ImageFont.load_default()
-                
-                text = placed.cargo.name[:8]  # 最多显示8个字符
-                draw.text((x + 2, y + 2), text, fill=(0, 0, 0), font=font)
+            if w > 40 and h > 20:
+                text = placed.cargo.name[:6]
+                draw.text((x + 3, y + 3), text, fill=(255, 255, 255), font=self.font)
         
         # 添加标题
-        try:
-            title_font = ImageFont.truetype("arial.ttf", 16)
-        except:
-            title_font = ImageFont.load_default()
-        
-        draw.text((10, 10), "俯视图 (Top View)", fill=(50, 50, 50), font=title_font)
+        draw.text((10, 10), "俯视图 (Top View)", fill=(50, 50, 50), font=self.title_font)
         
         # 添加尺寸标注
-        draw.text((container_x, height - 30), f"长度: {self.container.length}cm", fill=(80, 80, 80))
-        draw.text((width - 150, container_y + container_h + 10), f"宽度: {self.container.width}cm", fill=(80, 80, 80))
+        draw.text((container_x, height - 30), f"长度: {self.container.length}cm", fill=(80, 80, 80), font=self.font)
+        draw.text((width - 180, container_y + container_h + 10), f"宽度: {self.container.width}cm", fill=(80, 80, 80), font=self.font)
         
         return img
     
@@ -1717,14 +1836,9 @@ class LoadingImageGenerator:
             draw.rectangle([x, y, x + w, y + h], fill=color, outline=(50, 50, 50), width=1)
         
         # 添加标题
-        try:
-            title_font = ImageFont.truetype("arial.ttf", 16)
-        except:
-            title_font = ImageFont.load_default()
-        
-        draw.text((10, 10), "正视图 (Front View)", fill=(50, 50, 50), font=title_font)
-        draw.text((container_x, height - 30), f"长度: {self.container.length}cm", fill=(80, 80, 80))
-        draw.text((10, container_y - 20), f"高度: {self.container.height}cm", fill=(80, 80, 80))
+        draw.text((10, 10), "正视图 (Front View)", fill=(50, 50, 50), font=self.title_font)
+        draw.text((container_x, height - 30), f"长度: {self.container.length}cm", fill=(80, 80, 80), font=self.font)
+        draw.text((10, container_y - 25), f"高度: {self.container.height}cm", fill=(80, 80, 80), font=self.font)
         
         return img
     
@@ -1760,19 +1874,174 @@ class LoadingImageGenerator:
             draw.rectangle([x, y, x + w, y + h], fill=color, outline=(50, 50, 50), width=1)
         
         # 添加标题
-        try:
-            title_font = ImageFont.truetype("arial.ttf", 16)
-        except:
-            title_font = ImageFont.load_default()
+        draw.text((10, 10), "侧视图 (Side View)", fill=(50, 50, 50), font=self.title_font)
+        draw.text((container_x, height - 30), f"宽度: {self.container.width}cm", fill=(80, 80, 80), font=self.font)
+        draw.text((10, container_y - 25), f"高度: {self.container.height}cm", fill=(80, 80, 80), font=self.font)
         
-        draw.text((10, 10), "侧视图 (Side View)", fill=(50, 50, 50), font=title_font)
-        draw.text((container_x, height - 30), f"宽度: {self.container.width}cm", fill=(80, 80, 80))
-        draw.text((10, container_y - 20), f"高度: {self.container.height}cm", fill=(80, 80, 80))
+        return img
+    
+    def generate_isometric_view(self, width: int = 800, height: int = 600) -> Optional['Image.Image']:
+        """生成等轴测视图（使用OpenGL截图）"""
+        if not PIL_SUPPORT:
+            return None
+        
+        # 如果有3D视图引用，使用OpenGL截图
+        if self.view_3d is not None:
+            try:
+                # 使用OpenGL截图
+                qimage = self.view_3d.capture_isometric_image(width, height)
+                
+                # 将QImage转换为PIL Image
+                qimage = qimage.convertToFormat(qimage.Format.Format_RGB888)
+                ptr = qimage.bits()
+                ptr.setsize(qimage.sizeInBytes())
+                
+                img = Image.frombytes('RGB', (qimage.width(), qimage.height()), bytes(ptr))
+                
+                # 添加标题和尺寸信息
+                draw = ImageDraw.Draw(img)
+                
+                # 绘制半透明背景
+                title_bg = Image.new('RGBA', (width, 40), (240, 240, 245, 220))
+                img_rgba = img.convert('RGBA')
+                img_rgba.paste(title_bg, (0, 0), title_bg)
+                
+                footer_bg = Image.new('RGBA', (width, 35), (240, 240, 245, 220))
+                img_rgba.paste(footer_bg, (0, height - 35), footer_bg)
+                
+                img = img_rgba.convert('RGB')
+                draw = ImageDraw.Draw(img)
+                
+                L, W, H = self.container.length, self.container.width, self.container.height
+                draw.text((10, 10), "等轴测视图 (Isometric View)", fill=(50, 50, 50), font=self.title_font)
+                draw.text((10, height - 30), f"尺寸: {L} × {W} × {H} cm", fill=(80, 80, 80), font=self.font)
+                
+                return img
+            except Exception as e:
+                print(f"OpenGL截图失败，回退到PIL绘制: {e}")
+        
+        # 回退到PIL手动绘制
+        return self._generate_isometric_view_pil(width, height)
+    
+    def _generate_isometric_view_pil(self, width: int = 800, height: int = 600) -> Optional['Image.Image']:
+        """使用PIL手动绘制等轴测视图（备用方法）"""
+        img = Image.new('RGB', (width, height), color=(240, 240, 245))
+        draw = ImageDraw.Draw(img)
+        
+        # 等轴测角度
+        angle = math.radians(30)
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        
+        # 容器尺寸
+        L, W, H = self.container.length, self.container.width, self.container.height
+        
+        # 计算投影后的边界框
+        # 等轴测投影: px = (x - y) * cos(30), py = -(x + y) * sin(30) - z
+        corners = [
+            (0, 0, 0), (L, 0, 0), (L, W, 0), (0, W, 0),
+            (0, 0, H), (L, 0, H), (L, W, H), (0, W, H)
+        ]
+        
+        proj_x = [(c[0] - c[1]) * cos_a for c in corners]
+        proj_y = [-(c[0] + c[1]) * sin_a - c[2] for c in corners]
+        
+        min_px, max_px = min(proj_x), max(proj_x)
+        min_py, max_py = min(proj_y), max(proj_y)
+        
+        proj_width = max_px - min_px
+        proj_height = max_py - min_py
+        
+        # 计算缩放比例，留边距
+        margin = 60
+        scale = min((width - 2 * margin) / proj_width, (height - 2 * margin) / proj_height)
+        
+        # 计算居中偏移
+        cx = width / 2 - (min_px + max_px) / 2 * scale
+        cy = height / 2 - (min_py + max_py) / 2 * scale
+        
+        def project(x, y, z):
+            """等轴测投影"""
+            px = (x - y) * cos_a * scale + cx
+            py = -(x + y) * sin_a * scale - z * scale + cy
+            return int(px), int(py)
+        
+        # 绘制容器边框（线框）
+        container_color = (100, 100, 110)
+        
+        # 底面
+        p0 = project(0, 0, 0)
+        p1 = project(L, 0, 0)
+        p2 = project(L, W, 0)
+        p3 = project(0, W, 0)
+        draw.line([p0, p1], fill=container_color, width=2)
+        draw.line([p1, p2], fill=container_color, width=2)
+        draw.line([p2, p3], fill=container_color, width=2)
+        draw.line([p3, p0], fill=container_color, width=2)
+        
+        # 顶面
+        p4 = project(0, 0, H)
+        p5 = project(L, 0, H)
+        p6 = project(L, W, H)
+        p7 = project(0, W, H)
+        draw.line([p4, p5], fill=container_color, width=2)
+        draw.line([p5, p6], fill=container_color, width=2)
+        draw.line([p6, p7], fill=container_color, width=2)
+        draw.line([p7, p4], fill=container_color, width=2)
+        
+        # 竖直边
+        draw.line([p0, p4], fill=container_color, width=2)
+        draw.line([p1, p5], fill=container_color, width=2)
+        draw.line([p2, p6], fill=container_color, width=2)
+        draw.line([p3, p7], fill=container_color, width=2)
+        
+        # 绘制货物（按深度排序 - painter's algorithm）
+        # 等轴测视角从右前上方看，需要先画左后下的货物
+        # 排序依据：x小、y小的在后面先画；同位置时z小的先画
+        sorted_cargos = sorted(self.placed_cargos, 
+                               key=lambda p: (p.x + p.y + p.z * 0.5))
+        
+        for placed in sorted_cargos:
+            x, y, z = placed.x, placed.y, placed.z
+            l = placed.actual_length
+            w = placed.actual_width
+            h = placed.cargo.height
+            
+            r, g, b = placed.cargo.color
+            color = (int(r * 255), int(g * 255), int(b * 255))
+            darker = (int(r * 200), int(g * 200), int(b * 200))
+            darkest = (int(r * 160), int(g * 160), int(b * 160))
+            
+            # 货物的8个顶点
+            # 底面四点
+            v0 = project(x, y, z)          # 左后下
+            v1 = project(x + l, y, z)      # 右后下
+            v2 = project(x + l, y + w, z)  # 右前下
+            v3 = project(x, y + w, z)      # 左前下
+            # 顶面四点
+            v4 = project(x, y, z + h)          # 左后上
+            v5 = project(x + l, y, z + h)      # 右后上
+            v6 = project(x + l, y + w, z + h)  # 右前上
+            v7 = project(x, y + w, z + h)      # 左前上
+            
+            # 从右前上方看，可见三个面：顶面、右面(x=x+l)、前面(y=y+w)
+            # 按painter算法，先画被遮挡的面
+            
+            # 右面 (x = x+l 那一面) - 中等亮度
+            draw.polygon([v1, v2, v6, v5], fill=darker, outline=(30, 30, 30))
+            # 前面 (y = y+w 那一面) - 最暗
+            draw.polygon([v3, v2, v6, v7], fill=darkest, outline=(30, 30, 30))
+            # 顶面 (z = z+h 那一面) - 最亮，最后画
+            draw.polygon([v4, v5, v6, v7], fill=color, outline=(30, 30, 30))
+        
+        # 添加标题
+        draw.text((10, 10), "等轴测视图 (Isometric View)", fill=(50, 50, 50), font=self.title_font)
+        draw.text((10, height - 30), f"尺寸: {L} × {W} × {H} cm", fill=(80, 80, 80), font=self.font)
         
         return img
     
     def generate_combined_view(self, width: int = 1200, height: int = 900) -> Optional['Image.Image']:
-        """生成组合视图（三视图合一）"""
+        """生成组合视图（四视图合一：俯视、正视、侧视、等轴测）"""
         if not PIL_SUPPORT:
             return None
         
@@ -1782,10 +2051,11 @@ class LoadingImageGenerator:
         
         combined = Image.new('RGB', (width, height), color=(255, 255, 255))
         
-        # 生成三个视图
+        # 生成四个视图
         top_view = self.generate_top_view(sub_width, sub_height)
         front_view = self.generate_front_view(sub_width, sub_height)
         side_view = self.generate_side_view(sub_width, sub_height)
+        iso_view = self.generate_isometric_view(sub_width, sub_height)
         
         # 拼接
         if top_view:
@@ -1794,49 +2064,70 @@ class LoadingImageGenerator:
             combined.paste(front_view, (sub_width + 20, 10))
         if side_view:
             combined.paste(side_view, (10, sub_height + 20))
+        if iso_view:
+            combined.paste(iso_view, (sub_width + 20, sub_height + 20))
         
-        # 添加统计信息框
-        draw = ImageDraw.Draw(combined)
-        stats_x = sub_width + 20
-        stats_y = sub_height + 20
-        stats_w = sub_width
-        stats_h = sub_height
+        return combined
+    
+    def generate_summary_image(self, width: int = 1200, height: int = 800) -> Optional['Image.Image']:
+        """生成带统计信息的综合图"""
+        if not PIL_SUPPORT:
+            return None
         
-        draw.rectangle([stats_x, stats_y, stats_x + stats_w, stats_y + stats_h],
-                      fill=(250, 250, 250), outline=(200, 200, 200), width=2)
+        img = Image.new('RGB', (width, height), color=(255, 255, 255))
+        draw = ImageDraw.Draw(img)
         
-        # 添加统计文字
-        try:
-            font = ImageFont.truetype("arial.ttf", 14)
-            title_font = ImageFont.truetype("arial.ttf", 18)
-        except:
-            font = ImageFont.load_default()
-            title_font = font
+        # 左侧放等轴测视图
+        iso_width = width * 2 // 3 - 20
+        iso_height = height - 40
+        iso_view = self.generate_isometric_view(iso_width, iso_height)
+        if iso_view:
+            img.paste(iso_view, (10, 20))
         
+        # 右侧放统计信息
+        stats_x = iso_width + 30
+        stats_y = 30
+        stats_w = width - stats_x - 20
+        
+        # 绘制统计信息背景
+        draw.rectangle([stats_x, stats_y, width - 20, height - 20],
+                      fill=(248, 248, 250), outline=(200, 200, 210), width=2)
+        
+        # 标题
         y_offset = stats_y + 20
-        draw.text((stats_x + 20, y_offset), "装载统计 (Loading Statistics)", fill=(50, 50, 50), font=title_font)
-        y_offset += 35
+        draw.text((stats_x + 15, y_offset), "装载统计", fill=(50, 50, 50), font=self.title_font)
+        y_offset += 40
         
+        # 分隔线
+        draw.line([(stats_x + 10, y_offset), (width - 30, y_offset)], fill=(200, 200, 210), width=1)
+        y_offset += 15
+        
+        # 统计数据
         total_volume = sum(p.cargo.volume for p in self.placed_cargos)
         total_weight = sum(p.cargo.weight for p in self.placed_cargos)
         vol_util = (total_volume / self.container.volume) * 100 if self.container.volume > 0 else 0
         wt_util = (total_weight / self.container.max_weight) * 100 if self.container.max_weight > 0 else 0
         
-        stats_text = [
-            f"容器: {self.container.name}",
-            f"容器尺寸: {self.container.length} × {self.container.width} × {self.container.height} cm",
-            f"装载件数: {len(self.placed_cargos)}",
-            f"总体积: {total_volume/1000000:.2f} m³",
-            f"空间利用率: {vol_util:.1f}%",
-            f"总重量: {total_weight:.1f} kg",
-            f"载重利用率: {wt_util:.1f}%",
+        stats_items = [
+            ("容器类型", self.container.name),
+            ("容器尺寸", f"{self.container.length}×{self.container.width}×{self.container.height} cm"),
+            ("容积", f"{self.container.volume_cbm:.1f} m³"),
+            ("最大载重", f"{self.container.max_weight:,} kg"),
+            ("", ""),  # 空行
+            ("装载件数", f"{len(self.placed_cargos)} 件"),
+            ("已用体积", f"{total_volume/1000000:.2f} m³"),
+            ("空间利用率", f"{vol_util:.1f}%"),
+            ("总重量", f"{total_weight:.1f} kg"),
+            ("载重利用率", f"{wt_util:.1f}%"),
         ]
         
-        for text in stats_text:
-            draw.text((stats_x + 20, y_offset), text, fill=(80, 80, 80), font=font)
-            y_offset += 25
+        for label, value in stats_items:
+            if label:
+                draw.text((stats_x + 15, y_offset), f"{label}:", fill=(100, 100, 100), font=self.font)
+                draw.text((stats_x + 100, y_offset), str(value), fill=(50, 50, 50), font=self.font)
+            y_offset += 28
         
-        return combined
+        return img
     
     def save_images(self, base_path: str) -> List[str]:
         """保存所有视图图片"""
@@ -1846,7 +2137,9 @@ class LoadingImageGenerator:
             ('top', self.generate_top_view),
             ('front', self.generate_front_view),
             ('side', self.generate_side_view),
+            ('isometric', self.generate_isometric_view),
             ('combined', self.generate_combined_view),
+            ('summary', self.generate_summary_image),
         ]
         
         for name, generator in views:
@@ -1864,7 +2157,7 @@ class ContainerLoadingApp(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("集装箱配载软件 v4.0 - 多集装箱支持")
+        self.setWindowTitle("集装箱配载软件 v0.5 - by Henry Xue")
         self.setMinimumSize(1500, 900)
         self.resize(1600, 1000)
         
@@ -2346,6 +2639,64 @@ class ContainerLoadingApp(QMainWindow):
         self.drag_hint_label.setVisible(False)
         view_layout.addWidget(self.drag_hint_label)
         
+        # 选中货物信息面板
+        self.selected_cargo_group = QGroupBox("📦 选中货物信息 (点击3D视图中的货物查看)")
+        self.selected_cargo_group.setStyleSheet("""
+            QGroupBox {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3d5a80, stop:1 #2c3e50);
+                border: 1px solid #4a90d9;
+                border-radius: 6px;
+                margin-top: 8px;
+                font-weight: bold;
+                color: #81D4FA;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
+        selected_cargo_layout = QHBoxLayout(self.selected_cargo_group)
+        
+        # 左侧：基本信息
+        left_info = QVBoxLayout()
+        self.cargo_name_label = QLabel("名称: -")
+        self.cargo_size_label = QLabel("尺寸: -")
+        self.cargo_weight_label = QLabel("重量: -")
+        self.cargo_stackable_label = QLabel("可堆叠: -")
+        
+        for label in [self.cargo_name_label, self.cargo_size_label, 
+                      self.cargo_weight_label, self.cargo_stackable_label]:
+            label.setStyleSheet("color: #E0E0E0; font-size: 11px;")
+            left_info.addWidget(label)
+        selected_cargo_layout.addLayout(left_info)
+        
+        # 中间：位置信息
+        mid_info = QVBoxLayout()
+        self.cargo_pos_label = QLabel("位置: -")
+        self.cargo_rotation_label = QLabel("旋转: -")
+        self.cargo_layer_label = QLabel("层次: -")
+        self.cargo_volume_label = QLabel("体积: -")
+        
+        for label in [self.cargo_pos_label, self.cargo_rotation_label,
+                      self.cargo_layer_label, self.cargo_volume_label]:
+            label.setStyleSheet("color: #E0E0E0; font-size: 11px;")
+            mid_info.addWidget(label)
+        selected_cargo_layout.addLayout(mid_info)
+        
+        # 右侧：加固建议
+        right_info = QVBoxLayout()
+        self.cargo_securing_label = QLabel("加固建议: -")
+        self.cargo_securing_label.setWordWrap(True)
+        self.cargo_securing_label.setStyleSheet("color: #FFD54F; font-size: 11px;")
+        right_info.addWidget(self.cargo_securing_label)
+        right_info.addStretch()
+        selected_cargo_layout.addLayout(right_info)
+        
+        self.selected_cargo_group.setMaximumHeight(120)
+        view_layout.addWidget(self.selected_cargo_group)
+        
         right_layout.addWidget(view_group)
         
         # 统计信息
@@ -2405,10 +2756,42 @@ class ContainerLoadingApp(QMainWindow):
         steps_layout = QVBoxLayout(steps_group)
         
         self.steps_table = QTableWidget()
-        self.steps_table.setColumnCount(5)
-        self.steps_table.setHorizontalHeaderLabels(["步骤", "货物", "位置描述", "坐标", "旋转"])
-        self.steps_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.steps_table.setMaximumHeight(150)
+        self.steps_table.setColumnCount(6)
+        self.steps_table.setHorizontalHeaderLabels(["序号", "集装箱", "货物名称", "尺寸(cm)", "位置坐标", "加固"])
+        
+        # 设置列宽比例
+        header = self.steps_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)  # 序号
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)  # 集装箱
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # 货物名称
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)  # 尺寸
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)  # 位置坐标
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)  # 加固
+        
+        self.steps_table.setColumnWidth(0, 50)   # 序号
+        self.steps_table.setColumnWidth(1, 70)   # 集装箱
+        self.steps_table.setColumnWidth(3, 120)  # 尺寸
+        self.steps_table.setColumnWidth(4, 130)  # 位置坐标
+        self.steps_table.setColumnWidth(5, 80)   # 加固
+        
+        self.steps_table.setMaximumHeight(180)
+        self.steps_table.setAlternatingRowColors(True)
+        self.steps_table.setStyleSheet("""
+            QTableWidget {
+                alternate-background-color: #2a3441;
+                gridline-color: #3d4f5f;
+            }
+            QTableWidget::item {
+                padding: 4px;
+            }
+            QHeaderView::section {
+                background-color: #3d5a80;
+                color: white;
+                padding: 5px;
+                border: none;
+                font-weight: bold;
+            }
+        """)
         steps_layout.addWidget(self.steps_table)
         
         right_layout.addWidget(steps_group)
@@ -2987,6 +3370,7 @@ class ContainerLoadingApp(QMainWindow):
         
         # 显示集装箱选择器
         self.container_selector_group.setVisible(True)
+        self.container_selector.setCurrentIndex(0)  # 默认选择"全部概览"
         
         # 设置3D视图为多集装箱模式
         self.gl_widget.set_multi_container_results(self.container_results)
@@ -3007,9 +3391,11 @@ class ContainerLoadingApp(QMainWindow):
                 step_num += 1
                 all_steps.append({
                     'step': step_num,
-                    'cargo_name': f"[箱{result.container_index+1}] {placed.cargo.name}",
-                    'position': f"X:{placed.x:.0f} Y:{placed.y:.0f} Z:{placed.z:.0f}",
-                    'securing': '标准加固'
+                    'container': f"#{result.container_index+1}",
+                    'cargo_name': placed.cargo.name,
+                    'dimensions': f"{placed.actual_length}×{placed.actual_width}×{placed.cargo.height}",
+                    'position': f"({placed.x:.0f}, {placed.y:.0f}, {placed.z:.0f})",
+                    'securing': '标准'
                 })
         self.update_steps_table(all_steps)
         
@@ -3035,10 +3421,33 @@ class ContainerLoadingApp(QMainWindow):
         """更新装载步骤表格"""
         self.steps_table.setRowCount(len(steps))
         for i, step in enumerate(steps):
-            self.steps_table.setItem(i, 0, QTableWidgetItem(str(step.get('step', i+1))))
-            self.steps_table.setItem(i, 1, QTableWidgetItem(step.get('cargo_name', '')))
-            self.steps_table.setItem(i, 2, QTableWidgetItem(step.get('position', '')))
-            self.steps_table.setItem(i, 3, QTableWidgetItem(step.get('securing', '标准加固')))
+            # 序号
+            item0 = QTableWidgetItem(str(step.get('step', i+1)))
+            item0.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.steps_table.setItem(i, 0, item0)
+            
+            # 集装箱
+            item1 = QTableWidgetItem(step.get('container', '-'))
+            item1.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.steps_table.setItem(i, 1, item1)
+            
+            # 货物名称
+            self.steps_table.setItem(i, 2, QTableWidgetItem(step.get('cargo_name', '')))
+            
+            # 尺寸
+            item3 = QTableWidgetItem(step.get('dimensions', ''))
+            item3.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.steps_table.setItem(i, 3, item3)
+            
+            # 位置坐标
+            item4 = QTableWidgetItem(step.get('position', ''))
+            item4.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.steps_table.setItem(i, 4, item4)
+            
+            # 加固建议
+            item5 = QTableWidgetItem(step.get('securing', '标准'))
+            item5.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.steps_table.setItem(i, 5, item5)
     
     def create_cargo_group(self):
         """创建货物分组"""
@@ -3420,125 +3829,597 @@ class ContainerLoadingApp(QMainWindow):
         
         filename, filter_used = QFileDialog.getSaveFileName(
             self, "导出配载方案", "", 
-            "文本文件 (*.txt);;JSON文件 (*.json)")
+            "PDF文件 (*.pdf);;文本文件 (*.txt);;JSON文件 (*.json)")
         
         if filename:
             try:
-                # 计算重心信息
-                total_volume = sum(p.cargo.volume for p in self.placed_cargos)
-                total_weight = sum(p.cargo.weight for p in self.placed_cargos)
+                # 检查是否为多集装箱模式
+                is_multi = self.multi_container_mode and len(self.container_results) > 0
                 
-                # 计算重心
-                if total_weight > 0:
-                    cog_x = sum(p.center_x * p.cargo.weight for p in self.placed_cargos) / total_weight
-                    cog_y = sum(p.center_y * p.cargo.weight for p in self.placed_cargos) / total_weight
-                    cog_z = sum(p.center_z * p.cargo.weight for p in self.placed_cargos) / total_weight
+                if is_multi:
+                    self.export_multi_container_plan(filename)
+                else:
+                    self.export_single_container_plan(filename)
                     
-                    # 计算偏移
-                    center_x = self.container.length / 2
-                    center_y = self.container.width / 2
-                    offset_x = cog_x - center_x
-                    offset_y = cog_y - center_y
-                else:
-                    cog_x = cog_y = cog_z = 0
-                    offset_x = offset_y = 0
-                
-                if filename.endswith(".json"):
-                    data = {
-                        "container": {
-                            "name": self.container.name,
-                            "type": self.container.container_type,
-                            "length": self.container.length,
-                            "width": self.container.width,
-                            "height": self.container.height,
-                            "max_weight": self.container.max_weight
-                        },
-                        "statistics": {
-                            "loaded_count": len(self.placed_cargos),
-                            "total_volume_m3": round(total_volume / 1000000, 3),
-                            "total_weight_kg": round(total_weight, 1),
-                            "volume_utilization": round((total_volume/self.container.volume)*100, 1),
-                            "weight_utilization": round((total_weight/self.container.max_weight)*100, 1)
-                        },
-                        "center_of_gravity": {
-                            "x": round(cog_x, 1),
-                            "y": round(cog_y, 1),
-                            "z": round(cog_z, 1),
-                            "offset_x": round(offset_x, 1),
-                            "offset_y": round(offset_y, 1)
-                        },
-                        "loading_steps": [
-                            {
-                                "step": i + 1,
-                                "cargo_name": p.cargo.name,
-                                "dimensions": f"{p.cargo.length}×{p.cargo.width}×{p.cargo.height}",
-                                "weight": p.cargo.weight,
-                                "position": {"x": round(p.x, 1), "y": round(p.y, 1), "z": round(p.z, 1)},
-                                "rotated": p.rotated,
-                                "securing": self.get_securing_advice(p, i, len(self.placed_cargos))
-                            }
-                            for i, p in enumerate(self.placed_cargos)
-                        ]
-                    }
-                    with open(filename, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                else:
-                    with open(filename, "w", encoding="utf-8") as f:
-                        f.write("=" * 70 + "\n")
-                        f.write("                     集装箱配载方案\n")
-                        f.write("=" * 70 + "\n\n")
-                        
-                        f.write(f"集装箱类型: {self.container.name}\n")
-                        f.write(f"容器类别: {self.container.container_type}\n")
-                        f.write(f"内部尺寸: {self.container.length} × {self.container.width} × {self.container.height} cm\n")
-                        f.write(f"容积: {self.container.volume_cbm:.1f} m³\n")
-                        f.write(f"最大载重: {self.container.max_weight:,} kg\n\n")
-                        
-                        f.write("-" * 70 + "\n")
-                        f.write("重心分析:\n")
-                        f.write("-" * 70 + "\n")
-                        f.write(f"  重心位置: X={cog_x:.1f}cm, Y={cog_y:.1f}cm, Z={cog_z:.1f}cm\n")
-                        f.write(f"  横向偏移: {offset_x:.1f}cm {'(偏左)' if offset_x < 0 else '(偏右)' if offset_x > 0 else '(居中)'}\n")
-                        f.write(f"  纵向偏移: {offset_y:.1f}cm {'(偏前)' if offset_y < 0 else '(偏后)' if offset_y > 0 else '(居中)'}\n")
-                        
-                        # 重心评估
-                        max_offset = min(self.container.length, self.container.width) * 0.1
-                        if abs(offset_x) < max_offset and abs(offset_y) < max_offset:
-                            f.write("  评估: ✓ 重心分布良好\n\n")
-                        else:
-                            f.write("  评估: ⚠ 重心偏移较大，建议调整\n\n")
-                        
-                        f.write("-" * 70 + "\n")
-                        f.write("装载步骤 (按顺序装载):\n")
-                        f.write("-" * 70 + "\n\n")
-                        
-                        for i, p in enumerate(self.placed_cargos, 1):
-                            f.write(f"步骤 {i:3d}: {p.cargo.name}\n")
-                            f.write(f"  尺寸: {p.cargo.length} × {p.cargo.width} × {p.cargo.height} cm\n")
-                            f.write(f"  重量: {p.cargo.weight} kg\n")
-                            f.write(f"  位置: X={p.x:.1f}, Y={p.y:.1f}, Z={p.z:.1f} cm\n")
-                            f.write(f"  旋转: {'是' if p.rotated else '否'}\n")
-                            f.write(f"  加固: {self.get_securing_advice(p, i-1, len(self.placed_cargos))}\n\n")
-                        
-                        f.write("-" * 70 + "\n")
-                        f.write("尾部加固建议:\n")
-                        f.write("-" * 70 + "\n")
-                        f.write(self.get_tail_securing_advice())
-                        f.write("\n")
-                        
-                        f.write("-" * 70 + "\n")
-                        f.write("统计信息:\n")
-                        f.write(f"  装载件数: {len(self.placed_cargos)}\n")
-                        f.write(f"  总体积: {total_volume/1000000:.2f} m³\n")
-                        f.write(f"  空间利用率: {(total_volume/self.container.volume)*100:.1f}%\n")
-                        f.write(f"  总重量: {total_weight:.1f} kg\n")
-                        f.write(f"  载重利用率: {(total_weight/self.container.max_weight)*100:.1f}%\n")
-                        f.write("=" * 70 + "\n")
-                
                 QMessageBox.information(self, "成功", "配载方案导出成功")
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"导出失败: {e}")
     
+    def export_single_container_plan(self, filename: str):
+        """导出单集装箱配载方案"""
+        # 计算重心信息
+        total_volume = sum(p.cargo.volume for p in self.placed_cargos)
+        total_weight = sum(p.cargo.weight for p in self.placed_cargos)
+        
+        # 计算重心
+        if total_weight > 0:
+            cog_x = sum(p.center_x * p.cargo.weight for p in self.placed_cargos) / total_weight
+            cog_y = sum(p.center_y * p.cargo.weight for p in self.placed_cargos) / total_weight
+            cog_z = sum(p.center_z * p.cargo.weight for p in self.placed_cargos) / total_weight
+            center_x = self.container.length / 2
+            center_y = self.container.width / 2
+            offset_x = cog_x - center_x
+            offset_y = cog_y - center_y
+        else:
+            cog_x = cog_y = cog_z = 0
+            offset_x = offset_y = 0
+        
+        if filename.endswith(".pdf"):
+            self.export_loading_plan_pdf(filename, total_volume, total_weight,
+                                         cog_x, cog_y, cog_z, offset_x, offset_y)
+        elif filename.endswith(".json"):
+            self.export_single_container_json(filename, total_volume, total_weight,
+                                              cog_x, cog_y, cog_z, offset_x, offset_y)
+        elif filename.endswith(".txt"):
+            self.export_single_container_txt(filename, total_volume, total_weight,
+                                             cog_x, cog_y, cog_z, offset_x, offset_y)
+    
+    def export_multi_container_plan(self, filename: str):
+        """导出多集装箱配载方案"""
+        if filename.endswith(".pdf"):
+            self.export_multi_container_pdf(filename)
+        elif filename.endswith(".json"):
+            self.export_multi_container_json(filename)
+        elif filename.endswith(".txt"):
+            self.export_multi_container_txt(filename)
+    
+    def export_multi_container_txt(self, filename: str):
+        """导出多集装箱方案为文本文件"""
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("=" * 70 + "\n")
+            f.write("                     多集装箱配载方案\n")
+            f.write("=" * 70 + "\n\n")
+            
+            f.write(f"使用集装箱数量: {len(self.container_results)}\n")
+            f.write(f"总装载件数: {len(self.placed_cargos)}\n\n")
+            
+            for idx, result in enumerate(self.container_results):
+                f.write("-" * 70 + "\n")
+                f.write(f"集装箱 #{idx + 1}: {result.container.name}\n")
+                f.write("-" * 70 + "\n")
+                f.write(f"内部尺寸: {result.container.length} × {result.container.width} × {result.container.height} cm\n")
+                f.write(f"装载件数: {len(result.placed_cargos)}\n")
+                f.write(f"空间利用率: {result.volume_utilization:.1f}%\n")
+                f.write(f"载重利用率: {result.weight_utilization:.1f}%\n\n")
+                
+                f.write("装载明细:\n")
+                for i, p in enumerate(result.placed_cargos, 1):
+                    f.write(f"  {i:3d}. {p.cargo.name}\n")
+                    f.write(f"       尺寸: {p.actual_length}×{p.actual_width}×{p.cargo.height} cm\n")
+                    f.write(f"       位置: ({p.x:.0f}, {p.y:.0f}, {p.z:.0f})\n")
+                f.write("\n")
+            
+            f.write("=" * 70 + "\n")
+    
+    def export_multi_container_json(self, filename: str):
+        """导出多集装箱方案为JSON文件"""
+        data = {
+            "multi_container": True,
+            "container_count": len(self.container_results),
+            "total_loaded": len(self.placed_cargos),
+            "containers": []
+        }
+        
+        for idx, result in enumerate(self.container_results):
+            container_data = {
+                "index": idx + 1,
+                "container": {
+                    "name": result.container.name,
+                    "length": result.container.length,
+                    "width": result.container.width,
+                    "height": result.container.height
+                },
+                "statistics": {
+                    "loaded_count": len(result.placed_cargos),
+                    "volume_utilization": round(result.volume_utilization, 1),
+                    "weight_utilization": round(result.weight_utilization, 1)
+                },
+                "cargos": [
+                    {
+                        "name": p.cargo.name,
+                        "dimensions": f"{p.actual_length}×{p.actual_width}×{p.cargo.height}",
+                        "position": {"x": round(p.x, 1), "y": round(p.y, 1), "z": round(p.z, 1)},
+                        "rotated": p.rotated
+                    }
+                    for p in result.placed_cargos
+                ]
+            }
+            data["containers"].append(container_data)
+        
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    def export_multi_container_pdf(self, filename: str):
+        """导出多集装箱方案为PDF文件"""
+        if not PDF_SUPPORT:
+            QMessageBox.warning(self, "警告", "PDF导出功能不可用，请安装 reportlab 库")
+            return
+        
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+        from reportlab.lib.enums import TA_CENTER
+        
+        doc = SimpleDocTemplate(filename, pagesize=A4,
+                               rightMargin=2*cm, leftMargin=2*cm,
+                               topMargin=2*cm, bottomMargin=2*cm)
+        
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle('ChineseTitle', parent=styles['Title'],
+                                     fontName='ChineseFont', fontSize=24, alignment=TA_CENTER, spaceAfter=30)
+        heading_style = ParagraphStyle('ChineseHeading', parent=styles['Heading2'],
+                                       fontName='ChineseFont', fontSize=14,
+                                       textColor=colors.HexColor('#2c5282'), spaceBefore=15, spaceAfter=10)
+        normal_style = ParagraphStyle('ChineseNormal', parent=styles['Normal'],
+                                      fontName='ChineseFont', fontSize=10, leading=14)
+        
+        elements = []
+        elements.append(Paragraph("多集装箱配载方案", title_style))
+        elements.append(Spacer(1, 20))
+        
+        # 总体统计
+        elements.append(Paragraph("一、总体统计", heading_style))
+        summary_data = [
+            ['统计项', '数值'],
+            ['使用集装箱数', f'{len(self.container_results)} 个'],
+            ['总装载件数', f'{len(self.placed_cargos)} 件'],
+        ]
+        summary_table = Table(summary_data, colWidths=[6*cm, 9*cm])
+        summary_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'ChineseFont'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4a5568')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+            ('PADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(summary_table)
+        elements.append(Spacer(1, 20))
+        
+        # 每个集装箱的详情
+        for idx, result in enumerate(self.container_results):
+            elements.append(Paragraph(f"集装箱 #{idx + 1}: {result.container.name}", heading_style))
+            
+            # 集装箱信息
+            info_data = [
+                ['项目', '数值'],
+                ['内部尺寸', f'{result.container.length} × {result.container.width} × {result.container.height} cm'],
+                ['装载件数', f'{len(result.placed_cargos)} 件'],
+                ['空间利用率', f'{result.volume_utilization:.1f}%'],
+                ['载重利用率', f'{result.weight_utilization:.1f}%'],
+            ]
+            info_table = Table(info_data, colWidths=[5*cm, 10*cm])
+            info_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), 'ChineseFont'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#38a169')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+                ('PADDING', (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(info_table)
+            elements.append(Spacer(1, 10))
+            
+            # 装载明细
+            cargo_header = ['序号', '货物名称', '尺寸(cm)', '位置(X,Y,Z)']
+            cargo_data = [cargo_header]
+            for i, p in enumerate(result.placed_cargos, 1):
+                cargo_data.append([
+                    str(i),
+                    p.cargo.name[:12],
+                    f'{p.actual_length}×{p.actual_width}×{p.cargo.height:.0f}',
+                    f'({p.x:.0f}, {p.y:.0f}, {p.z:.0f})'
+                ])
+            
+            cargo_table = Table(cargo_data, colWidths=[1.5*cm, 5*cm, 4*cm, 4.5*cm])
+            cargo_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), 'ChineseFont'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#805ad5')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')]),
+                ('PADDING', (0, 0), (-1, -1), 5),
+            ]))
+            elements.append(cargo_table)
+            elements.append(Spacer(1, 15))
+            
+            # 添加等轴测视图
+            if PIL_SUPPORT:
+                try:
+                    from reportlab.platypus import Image as RLImage
+                    
+                    # 临时更新3D视图数据以获取正确的截图
+                    old_container = self.gl_widget.container
+                    old_placed = self.gl_widget.placed_cargos
+                    old_index = self.gl_widget.current_container_index
+                    
+                    self.gl_widget.container = result.container
+                    self.gl_widget.placed_cargos = result.placed_cargos
+                    self.gl_widget.current_container_index = idx  # 非-1表示单个集装箱模式
+                    
+                    generator = LoadingImageGenerator(result.container, result.placed_cargos, self.gl_widget)
+                    iso_img = generator.generate_isometric_view(450, 350)
+                    
+                    # 恢复原来的数据
+                    self.gl_widget.container = old_container
+                    self.gl_widget.placed_cargos = old_placed
+                    self.gl_widget.current_container_index = old_index
+                    
+                    if iso_img:
+                        import tempfile
+                        tmp_dir = os.path.dirname(filename) or tempfile.gettempdir()
+                        tmp_path = os.path.join(tmp_dir, f"_temp_container_{idx}_{id(self)}.png")
+                        iso_img.save(tmp_path)
+                        
+                        elements.append(Paragraph(f"装载示意图", normal_style))
+                        elements.append(Spacer(1, 5))
+                        elements.append(RLImage(tmp_path, width=14*cm, height=11*cm))
+                        
+                        # 记录临时文件以便后续清理
+                        if not hasattr(self, '_temp_files'):
+                            self._temp_files = []
+                        self._temp_files.append(tmp_path)
+                except Exception as e:
+                    elements.append(Paragraph(f"装载图生成失败: {str(e)}", normal_style))
+            
+            elements.append(Spacer(1, 20))
+            
+            # 如果不是最后一个集装箱，添加分页
+            if idx < len(self.container_results) - 1:
+                elements.append(PageBreak())
+        
+        doc.build(elements)
+        
+        # 清理临时文件
+        if hasattr(self, '_temp_files'):
+            for tmp_path in self._temp_files:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except:
+                    pass
+            self._temp_files = []
+    
+    def export_single_container_json(self, filename: str, total_volume: float, total_weight: float,
+                                      cog_x: float, cog_y: float, cog_z: float,
+                                      offset_x: float, offset_y: float):
+        """导出单集装箱方案为JSON"""
+        data = {
+            "container": {
+                "name": self.container.name,
+                "type": self.container.container_type,
+                "length": self.container.length,
+                "width": self.container.width,
+                "height": self.container.height,
+                "max_weight": self.container.max_weight
+            },
+            "statistics": {
+                "loaded_count": len(self.placed_cargos),
+                "total_volume_m3": round(total_volume / 1000000, 3),
+                "total_weight_kg": round(total_weight, 1),
+                "volume_utilization": round((total_volume/self.container.volume)*100, 1),
+                "weight_utilization": round((total_weight/self.container.max_weight)*100, 1)
+            },
+            "center_of_gravity": {
+                "x": round(cog_x, 1),
+                "y": round(cog_y, 1),
+                "z": round(cog_z, 1),
+                "offset_x": round(offset_x, 1),
+                "offset_y": round(offset_y, 1)
+            },
+            "loading_steps": [
+                {
+                    "step": i + 1,
+                    "cargo_name": p.cargo.name,
+                    "dimensions": f"{p.cargo.length}×{p.cargo.width}×{p.cargo.height}",
+                    "weight": p.cargo.weight,
+                    "position": {"x": round(p.x, 1), "y": round(p.y, 1), "z": round(p.z, 1)},
+                    "rotated": p.rotated
+                }
+                for i, p in enumerate(self.placed_cargos)
+            ]
+        }
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    def export_single_container_txt(self, filename: str, total_volume: float, total_weight: float,
+                                     cog_x: float, cog_y: float, cog_z: float,
+                                     offset_x: float, offset_y: float):
+        """导出单集装箱方案为文本文件"""
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("=" * 70 + "\n")
+            f.write("                     集装箱配载方案\n")
+            f.write("=" * 70 + "\n\n")
+            
+            f.write(f"集装箱类型: {self.container.name}\n")
+            f.write(f"容器类别: {self.container.container_type}\n")
+            f.write(f"内部尺寸: {self.container.length} × {self.container.width} × {self.container.height} cm\n")
+            f.write(f"容积: {self.container.volume_cbm:.1f} m³\n")
+            f.write(f"最大载重: {self.container.max_weight:,} kg\n\n")
+            
+            f.write("-" * 70 + "\n")
+            f.write("重心分析:\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"  重心位置: X={cog_x:.1f}cm, Y={cog_y:.1f}cm, Z={cog_z:.1f}cm\n")
+            f.write(f"  横向偏移: {offset_x:.1f}cm {'(偏左)' if offset_x < 0 else '(偏右)' if offset_x > 0 else '(居中)'}\n")
+            f.write(f"  纵向偏移: {offset_y:.1f}cm {'(偏前)' if offset_y < 0 else '(偏后)' if offset_y > 0 else '(居中)'}\n")
+            
+            max_offset = min(self.container.length, self.container.width) * 0.1
+            if abs(offset_x) < max_offset and abs(offset_y) < max_offset:
+                f.write("  评估: ✓ 重心分布良好\n\n")
+            else:
+                f.write("  评估: ⚠ 重心偏移较大，建议调整\n\n")
+            
+            f.write("-" * 70 + "\n")
+            f.write("装载步骤 (按顺序装载):\n")
+            f.write("-" * 70 + "\n\n")
+            
+            for i, p in enumerate(self.placed_cargos, 1):
+                f.write(f"步骤 {i:3d}: {p.cargo.name}\n")
+                f.write(f"  尺寸: {p.cargo.length} × {p.cargo.width} × {p.cargo.height} cm\n")
+                f.write(f"  重量: {p.cargo.weight} kg\n")
+                f.write(f"  位置: X={p.x:.1f}, Y={p.y:.1f}, Z={p.z:.1f} cm\n")
+                f.write(f"  旋转: {'是' if p.rotated else '否'}\n")
+                f.write(f"  加固: {self.get_securing_advice(p, i-1, len(self.placed_cargos))}\n\n")
+            
+            f.write("-" * 70 + "\n")
+            f.write("尾部加固建议:\n")
+            f.write("-" * 70 + "\n")
+            f.write(self.get_tail_securing_advice())
+            f.write("\n")
+            
+            f.write("-" * 70 + "\n")
+            f.write("统计信息:\n")
+            f.write(f"  装载件数: {len(self.placed_cargos)}\n")
+            f.write(f"  总体积: {total_volume/1000000:.2f} m³\n")
+            f.write(f"  空间利用率: {(total_volume/self.container.volume)*100:.1f}%\n")
+            f.write(f"  总重量: {total_weight:.1f} kg\n")
+            f.write(f"  载重利用率: {(total_weight/self.container.max_weight)*100:.1f}%\n")
+            f.write("=" * 70 + "\n")
+
+    def export_loading_plan_pdf(self, filename: str, total_volume: float, total_weight: float,
+                                 cog_x: float, cog_y: float, cog_z: float, 
+                                 offset_x: float, offset_y: float):
+        """导出配载方案为PDF格式"""
+        if not PDF_SUPPORT:
+            QMessageBox.warning(self, "警告", "PDF导出功能不可用，请安装 reportlab 库:\npip install reportlab")
+            return
+        
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm, mm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage, PageBreak
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        
+        # 创建PDF文档
+        doc = SimpleDocTemplate(
+            filename,
+            pagesize=A4,
+            rightMargin=2*cm,
+            leftMargin=2*cm,
+            topMargin=2*cm,
+            bottomMargin=2*cm
+        )
+        
+        # 样式设置
+        styles = getSampleStyleSheet()
+        
+        # 中文标题样式
+        title_style = ParagraphStyle(
+            'ChineseTitle',
+            parent=styles['Title'],
+            fontName='ChineseFont',
+            fontSize=24,
+            alignment=TA_CENTER,
+            spaceAfter=30
+        )
+        
+        heading_style = ParagraphStyle(
+            'ChineseHeading',
+            parent=styles['Heading2'],
+            fontName='ChineseFont',
+            fontSize=14,
+            textColor=colors.HexColor('#2c5282'),
+            spaceBefore=15,
+            spaceAfter=10
+        )
+        
+        normal_style = ParagraphStyle(
+            'ChineseNormal',
+            parent=styles['Normal'],
+            fontName='ChineseFont',
+            fontSize=10,
+            leading=14
+        )
+        
+        elements = []
+        
+        # 标题
+        elements.append(Paragraph("集装箱配载方案", title_style))
+        elements.append(Spacer(1, 20))
+        
+        # 容器信息部分
+        elements.append(Paragraph("一、容器信息", heading_style))
+        container_data = [
+            ['项目', '数值'],
+            ['容器类型', self.container.name],
+            ['容器类别', self.container.container_type],
+            ['内部尺寸', f'{self.container.length} × {self.container.width} × {self.container.height} cm'],
+            ['容积', f'{self.container.volume_cbm:.1f} m³'],
+            ['最大载重', f'{self.container.max_weight:,} kg'],
+        ]
+        
+        container_table = Table(container_data, colWidths=[5*cm, 10*cm])
+        container_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'ChineseFont'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4a5568')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+            ('BACKGROUND', (0, 1), (0, -1), colors.HexColor('#f7fafc')),
+            ('PADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(container_table)
+        elements.append(Spacer(1, 20))
+        
+        # 装载统计部分
+        elements.append(Paragraph("二、装载统计", heading_style))
+        vol_util = (total_volume / self.container.volume) * 100 if self.container.volume > 0 else 0
+        wt_util = (total_weight / self.container.max_weight) * 100 if self.container.max_weight > 0 else 0
+        
+        stats_data = [
+            ['统计项目', '数值'],
+            ['装载件数', f'{len(self.placed_cargos)} 件'],
+            ['总体积', f'{total_volume/1000000:.2f} m³'],
+            ['空间利用率', f'{vol_util:.1f}%'],
+            ['总重量', f'{total_weight:.1f} kg'],
+            ['载重利用率', f'{wt_util:.1f}%'],
+        ]
+        
+        stats_table = Table(stats_data, colWidths=[5*cm, 10*cm])
+        stats_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'ChineseFont'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#38a169')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+            ('BACKGROUND', (0, 1), (0, -1), colors.HexColor('#f0fff4')),
+            ('PADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(stats_table)
+        elements.append(Spacer(1, 20))
+        
+        # 重心分析部分
+        elements.append(Paragraph("三、重心分析", heading_style))
+        max_offset = min(self.container.length, self.container.width) * 0.1
+        cog_status = "良好" if abs(offset_x) < max_offset and abs(offset_y) < max_offset else "需注意"
+        
+        cog_data = [
+            ['分析项目', '数值', '评估'],
+            ['重心X坐标', f'{cog_x:.1f} cm', ''],
+            ['重心Y坐标', f'{cog_y:.1f} cm', ''],
+            ['重心Z坐标', f'{cog_z:.1f} cm', ''],
+            ['横向偏移', f'{offset_x:.1f} cm', '偏左' if offset_x < 0 else '偏右' if offset_x > 0 else '居中'],
+            ['纵向偏移', f'{offset_y:.1f} cm', '偏前' if offset_y < 0 else '偏后' if offset_y > 0 else '居中'],
+            ['整体评估', cog_status, '✓' if cog_status == "良好" else '⚠'],
+        ]
+        
+        cog_table = Table(cog_data, colWidths=[4*cm, 5*cm, 6*cm])
+        cog_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'ChineseFont'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3182ce')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+            ('BACKGROUND', (0, 1), (0, -1), colors.HexColor('#ebf8ff')),
+            ('PADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(cog_table)
+        elements.append(Spacer(1, 20))
+        
+        # 装载明细部分
+        elements.append(Paragraph("四、装载明细", heading_style))
+        
+        # 装载步骤表头
+        loading_header = ['序号', '货物名称', '尺寸 (cm)', '重量 (kg)', '位置 (X,Y,Z)', '旋转', '加固建议']
+        loading_data = [loading_header]
+        
+        for i, p in enumerate(self.placed_cargos, 1):
+            row = [
+                str(i),
+                p.cargo.name[:10],  # 截断过长的名称
+                f'{p.cargo.length}×{p.cargo.width}×{p.cargo.height}',
+                f'{p.cargo.weight:.1f}',
+                f'{p.x:.0f},{p.y:.0f},{p.z:.0f}',
+                '是' if p.rotated else '否',
+                self.get_securing_advice(p, i-1, len(self.placed_cargos))[:15]
+            ]
+            loading_data.append(row)
+        
+        loading_table = Table(loading_data, colWidths=[1*cm, 2.5*cm, 3*cm, 2*cm, 2.5*cm, 1.2*cm, 3*cm])
+        loading_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'ChineseFont'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#805ad5')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')]),
+            ('PADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(loading_table)
+        elements.append(Spacer(1, 20))
+        
+        # 尾部加固建议
+        elements.append(Paragraph("五、尾部加固建议", heading_style))
+        securing_advice = self.get_tail_securing_advice()
+        for line in securing_advice.split('\n'):
+            if line.strip():
+                elements.append(Paragraph(line.strip(), normal_style))
+        
+        elements.append(Spacer(1, 30))
+        
+        # 尝试添加装载图
+        tmp_path = None
+        if PIL_SUPPORT:
+            elements.append(PageBreak())
+            elements.append(Paragraph("六、装载示意图", heading_style))
+            
+            try:
+                # 生成等轴测视图
+                generator = LoadingImageGenerator(self.container, self.placed_cargos, self.gl_widget)
+                iso_img = generator.generate_isometric_view(500, 400)
+                
+                if iso_img:
+                    # 保存临时图片到与目标PDF相同的目录
+                    import tempfile
+                    tmp_dir = os.path.dirname(filename) or tempfile.gettempdir()
+                    tmp_path = os.path.join(tmp_dir, f"_temp_loading_diagram_{id(self)}.png")
+                    iso_img.save(tmp_path)
+                    
+                    # 添加到PDF
+                    elements.append(RLImage(tmp_path, width=15*cm, height=12*cm))
+            except Exception as e:
+                elements.append(Paragraph(f"装载图生成失败: {str(e)}", normal_style))
+        
+        # 生成PDF
+        doc.build(elements)
+        
+        # 清理临时文件
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
+
     def get_securing_advice(self, placed_cargo, index: int, total: int) -> str:
         """获取单个货物的加固建议"""
         advice = []
@@ -3676,6 +4557,58 @@ class ContainerLoadingApp(QMainWindow):
             self.drag_hint_label.setText(
                 f"已选中: {cargo.cargo.name} | 位置: ({cargo.x:.0f}, {cargo.y:.0f}, {cargo.z:.0f})"
             )
+            # 更新选中货物详情面板
+            self.update_selected_cargo_info(index)
+    
+    def update_selected_cargo_info(self, index: int):
+        """更新选中货物的详细信息显示"""
+        if not hasattr(self, 'cargo_name_label') or index < 0 or index >= len(self.placed_cargos):
+            return
+        
+        placed = self.placed_cargos[index]
+        cargo = placed.cargo
+        
+        # 基本信息
+        self.cargo_name_label.setText(f"名称: {cargo.name}")
+        if placed.rotated:
+            self.cargo_size_label.setText(f"尺寸: {cargo.width} × {cargo.length} × {cargo.height} cm (已旋转)")
+        else:
+            self.cargo_size_label.setText(f"尺寸: {cargo.length} × {cargo.width} × {cargo.height} cm")
+        self.cargo_weight_label.setText(f"重量: {cargo.weight:.1f} kg")
+        self.cargo_stackable_label.setText(f"可堆叠: {'是' if cargo.stackable else '否'}")
+        
+        # 位置信息
+        self.cargo_pos_label.setText(f"位置: X={placed.x:.0f}, Y={placed.y:.0f}, Z={placed.z:.0f} cm")
+        self.cargo_rotation_label.setText(f"旋转: {'是 (长宽互换)' if placed.rotated else '否'}")
+        
+        # 计算层次 (根据 Z 坐标)
+        layer = 1
+        for i, p in enumerate(self.placed_cargos):
+            if p.z < placed.z:
+                layer = max(layer, 2)
+            if p.z > placed.z:
+                layer = max(layer, 1)
+        z_height = placed.z
+        if z_height == 0:
+            layer_text = "底层 (地面)"
+        elif z_height < self.container.height / 3:
+            layer_text = "下层"
+        elif z_height < self.container.height * 2 / 3:
+            layer_text = "中层"
+        else:
+            layer_text = "上层"
+        self.cargo_layer_label.setText(f"层次: {layer_text} (Z={z_height:.0f}cm)")
+        
+        # 体积信息
+        volume_m3 = cargo.volume / 1000000
+        self.cargo_volume_label.setText(f"体积: {volume_m3:.3f} m³")
+        
+        # 加固建议
+        securing = self.get_securing_advice(placed, index, len(self.placed_cargos))
+        self.cargo_securing_label.setText(f"加固建议: {securing}")
+        
+        # 更新标题
+        self.selected_cargo_group.setTitle(f"📦 选中货物信息 - 第 {index + 1} 件 / 共 {len(self.placed_cargos)} 件")
     
     def on_cargo_drag_moved(self, index: int):
         """货物被拖拽移动后"""
@@ -3722,7 +4655,7 @@ class ContainerLoadingApp(QMainWindow):
         
         try:
             # 生成图片
-            generator = LoadingImageGenerator(self.container, self.placed_cargos)
+            generator = LoadingImageGenerator(self.container, self.placed_cargos, self.gl_widget)
             base_name = os.path.join(directory, "loading_plan")
             saved_files = generator.save_images(base_name)
             

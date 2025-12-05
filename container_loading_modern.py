@@ -2206,7 +2206,7 @@ class ContainerLoadingApp(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("集装箱配载软件 v0.5 - by Henry Xue")
+        self.setWindowTitle("集装箱配载软件 v4.1 - by Henry Xue")
         self.setMinimumSize(1500, 900)
         self.resize(1600, 1000)
         

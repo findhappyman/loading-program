@@ -2840,83 +2840,6 @@ class ContainerLoadingApp(QMainWindow):
         start_btn.clicked.connect(self.start_loading)
         action_layout.addWidget(start_btn)
         
-        # 拖拽调整模式
-        drag_layout = QHBoxLayout()
-        self.drag_mode_btn = ModernButton("🎯 拖拽调整模式")
-        self.drag_mode_btn.setCheckable(True)
-        self.drag_mode_btn.clicked.connect(self.toggle_drag_mode)
-        self.drag_mode_btn.setToolTip("开启后可在3D视图中直接拖拽调整货物位置\n左键点击选中，拖动移动，Shift+拖动改变高度\nR键旋转货物，方向键微调(1cm)，Ctrl+方向键(10cm)")
-        drag_layout.addWidget(self.drag_mode_btn)
-        action_layout.addLayout(drag_layout)
-        
-        # 拖拽模式辅助控制按钮
-        drag_control_layout = QHBoxLayout()
-        
-        # 旋转按钮
-        self.rotate_cargo_btn = ModernButton("🔄 旋转")
-        self.rotate_cargo_btn.clicked.connect(self.rotate_selected_cargo_from_btn)
-        self.rotate_cargo_btn.setToolTip("旋转选中的货物 (快捷键: R)")
-        self.rotate_cargo_btn.setEnabled(False)
-        drag_control_layout.addWidget(self.rotate_cargo_btn)
-        
-        # 碰撞检测开关
-        self.collision_check = QCheckBox("碰撞检测")
-        self.collision_check.setChecked(True)
-        self.collision_check.stateChanged.connect(self.toggle_collision_detection)
-        self.collision_check.setToolTip("开启后移动货物时防止与其他货物重叠")
-        drag_control_layout.addWidget(self.collision_check)
-        action_layout.addLayout(drag_control_layout)
-        
-        # 微调按钮组
-        fine_tune_layout = QHBoxLayout()
-        fine_tune_label = QLabel("微调:")
-        fine_tune_layout.addWidget(fine_tune_label)
-        
-        # 1cm 微调按钮
-        self.step_1cm_btns = {}
-        btn_x_minus = ModernButton("X-")
-        btn_x_minus.setFixedWidth(35)
-        btn_x_minus.clicked.connect(lambda: self.fine_tune_cargo(-1, 0, 0))
-        fine_tune_layout.addWidget(btn_x_minus)
-        
-        btn_x_plus = ModernButton("X+")
-        btn_x_plus.setFixedWidth(35)
-        btn_x_plus.clicked.connect(lambda: self.fine_tune_cargo(1, 0, 0))
-        fine_tune_layout.addWidget(btn_x_plus)
-        
-        btn_y_minus = ModernButton("Y-")
-        btn_y_minus.setFixedWidth(35)
-        btn_y_minus.clicked.connect(lambda: self.fine_tune_cargo(0, -1, 0))
-        fine_tune_layout.addWidget(btn_y_minus)
-        
-        btn_y_plus = ModernButton("Y+")
-        btn_y_plus.setFixedWidth(35)
-        btn_y_plus.clicked.connect(lambda: self.fine_tune_cargo(0, 1, 0))
-        fine_tune_layout.addWidget(btn_y_plus)
-        
-        btn_z_minus = ModernButton("Z-")
-        btn_z_minus.setFixedWidth(35)
-        btn_z_minus.clicked.connect(lambda: self.fine_tune_cargo(0, 0, -1))
-        fine_tune_layout.addWidget(btn_z_minus)
-        
-        btn_z_plus = ModernButton("Z+")
-        btn_z_plus.setFixedWidth(35)
-        btn_z_plus.clicked.connect(lambda: self.fine_tune_cargo(0, 0, 1))
-        fine_tune_layout.addWidget(btn_z_plus)
-        
-        action_layout.addLayout(fine_tune_layout)
-        
-        # 步进大小选择
-        step_layout = QHBoxLayout()
-        step_layout.addWidget(QLabel("步进:"))
-        self.step_size_combo = QComboBox()
-        self.step_size_combo.addItems(["1 cm", "5 cm", "10 cm", "20 cm"])
-        self.step_size_combo.setCurrentIndex(0)
-        self.step_size_combo.setToolTip("设置微调按钮的移动距离")
-        step_layout.addWidget(self.step_size_combo)
-        step_layout.addStretch()
-        action_layout.addLayout(step_layout)
-        
         manual_btn = ModernButton("✋ 精确调整")
         manual_btn.clicked.connect(self.enable_manual_edit)
         manual_btn.setToolTip("配载后通过对话框精确调整货物位置")
@@ -3025,6 +2948,122 @@ class ContainerLoadingApp(QMainWindow):
         view_btn_layout.addWidget(help_btn)
         
         view_layout.addLayout(view_btn_layout)
+        
+        # ==================== 拖拽调整控制面板 ====================
+        drag_control_group = QGroupBox("🎯 拖拽调整")
+        drag_control_group.setStyleSheet("""
+            QGroupBox {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3d4f5f, stop:1 #2a3a4a);
+                border: 1px solid #546E7A;
+                border-radius: 6px;
+                margin-top: 8px;
+                font-weight: bold;
+                color: #FFA726;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
+        drag_control_main_layout = QVBoxLayout(drag_control_group)
+        drag_control_main_layout.setSpacing(8)
+        
+        # 第一行：拖拽模式开关 + 旋转 + 碰撞检测
+        drag_row1 = QHBoxLayout()
+        
+        self.drag_mode_btn = ModernButton("🎯 拖拽调整模式")
+        self.drag_mode_btn.setCheckable(True)
+        self.drag_mode_btn.clicked.connect(self.toggle_drag_mode)
+        self.drag_mode_btn.setToolTip("开启后可在3D视图中直接拖拽调整货物位置\n左键点击选中，拖动移动，Shift+拖动改变高度\nR键旋转货物，方向键微调(1cm)，Ctrl+方向键(10cm)")
+        drag_row1.addWidget(self.drag_mode_btn)
+        
+        self.rotate_cargo_btn = ModernButton("🔄 旋转(R)")
+        self.rotate_cargo_btn.clicked.connect(self.rotate_selected_cargo_from_btn)
+        self.rotate_cargo_btn.setToolTip("旋转选中的货物 (快捷键: R)")
+        self.rotate_cargo_btn.setEnabled(False)
+        self.rotate_cargo_btn.setFixedWidth(90)
+        drag_row1.addWidget(self.rotate_cargo_btn)
+        
+        self.collision_check = QCheckBox("碰撞检测")
+        self.collision_check.setChecked(True)
+        self.collision_check.stateChanged.connect(self.toggle_collision_detection)
+        self.collision_check.setToolTip("开启后移动货物时防止与其他货物重叠")
+        self.collision_check.setStyleSheet("color: #E0E0E0;")
+        drag_row1.addWidget(self.collision_check)
+        
+        drag_row1.addStretch()
+        drag_control_main_layout.addLayout(drag_row1)
+        
+        # 第二行：微调按钮
+        drag_row2 = QHBoxLayout()
+        
+        fine_tune_label = QLabel("微调位置:")
+        fine_tune_label.setStyleSheet("color: #B0BEC5; font-size: 11px;")
+        drag_row2.addWidget(fine_tune_label)
+        
+        # X 方向
+        btn_x_minus = ModernButton("◀ X")
+        btn_x_minus.setFixedWidth(50)
+        btn_x_minus.clicked.connect(lambda: self.fine_tune_cargo(-1, 0, 0))
+        btn_x_minus.setToolTip("X方向负向移动")
+        drag_row2.addWidget(btn_x_minus)
+        
+        btn_x_plus = ModernButton("X ▶")
+        btn_x_plus.setFixedWidth(50)
+        btn_x_plus.clicked.connect(lambda: self.fine_tune_cargo(1, 0, 0))
+        btn_x_plus.setToolTip("X方向正向移动")
+        drag_row2.addWidget(btn_x_plus)
+        
+        drag_row2.addSpacing(10)
+        
+        # Y 方向
+        btn_y_minus = ModernButton("◀ Y")
+        btn_y_minus.setFixedWidth(50)
+        btn_y_minus.clicked.connect(lambda: self.fine_tune_cargo(0, -1, 0))
+        btn_y_minus.setToolTip("Y方向负向移动")
+        drag_row2.addWidget(btn_y_minus)
+        
+        btn_y_plus = ModernButton("Y ▶")
+        btn_y_plus.setFixedWidth(50)
+        btn_y_plus.clicked.connect(lambda: self.fine_tune_cargo(0, 1, 0))
+        btn_y_plus.setToolTip("Y方向正向移动")
+        drag_row2.addWidget(btn_y_plus)
+        
+        drag_row2.addSpacing(10)
+        
+        # Z 方向
+        btn_z_minus = ModernButton("▼ Z")
+        btn_z_minus.setFixedWidth(50)
+        btn_z_minus.clicked.connect(lambda: self.fine_tune_cargo(0, 0, -1))
+        btn_z_minus.setToolTip("Z方向向下移动")
+        drag_row2.addWidget(btn_z_minus)
+        
+        btn_z_plus = ModernButton("Z ▲")
+        btn_z_plus.setFixedWidth(50)
+        btn_z_plus.clicked.connect(lambda: self.fine_tune_cargo(0, 0, 1))
+        btn_z_plus.setToolTip("Z方向向上移动")
+        drag_row2.addWidget(btn_z_plus)
+        
+        drag_row2.addSpacing(15)
+        
+        # 步进选择
+        step_label = QLabel("步进:")
+        step_label.setStyleSheet("color: #B0BEC5; font-size: 11px;")
+        drag_row2.addWidget(step_label)
+        
+        self.step_size_combo = QComboBox()
+        self.step_size_combo.addItems(["1 cm", "5 cm", "10 cm", "20 cm"])
+        self.step_size_combo.setCurrentIndex(0)
+        self.step_size_combo.setToolTip("设置微调按钮的移动距离")
+        self.step_size_combo.setFixedWidth(70)
+        drag_row2.addWidget(self.step_size_combo)
+        
+        drag_row2.addStretch()
+        drag_control_main_layout.addLayout(drag_row2)
+        
+        view_layout.addWidget(drag_control_group)
         
         # 拖拽模式提示
         self.drag_hint_label = QLabel("")

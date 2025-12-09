@@ -662,16 +662,44 @@ class LoadingAlgorithm:
         return False
     
     def apply_rules(self, cargos: List[Cargo]) -> List[Cargo]:
-        """应用所有启用的规则"""
-        # 按优先级排序规则
-        sorted_rules = sorted([r for r in self.rules if r.enabled], 
-                             key=lambda r: r.priority, reverse=True)
+        """应用所有启用的规则 - 使用复合排序实现多规则联合作用"""
+        # 获取启用的规则，按优先级降序
+        enabled_rules = sorted([r for r in self.rules if r.enabled], 
+                              key=lambda r: r.priority, reverse=True)
         
-        result = cargos.copy()
-        for rule in sorted_rules:
-            result = rule.apply(result, self.placed_cargos)
+        if not enabled_rules:
+            return cargos
         
-        return result
+        # 使用复合排序键：每个规则产生一个排序分数
+        def composite_key(cargo):
+            scores = []
+            for rule in enabled_rules:
+                if rule.id == "priority_first":
+                    # 优先级规则：优先级越高分数越高
+                    scores.append(-cargo.priority)  # 负号使高优先级排前面
+                elif rule.id == "heavy_bottom":
+                    # 重物下沉：重货优先
+                    threshold = getattr(rule, 'weight_threshold', 100)
+                    if cargo.weight >= threshold:
+                        scores.append(0)  # 重货排前
+                    else:
+                        scores.append(1)  # 轻货排后
+                    scores.append(-cargo.weight)  # 同类按重量降序
+                elif rule.id == "volume_first":
+                    # 体积优先：体积越大排越前
+                    scores.append(-cargo.volume)
+                elif rule.id == "similar_stack":
+                    # 相近尺寸：按长度分组
+                    scores.append(-cargo.length)
+                elif rule.id == "same_size":
+                    # 相同尺寸优先：按尺寸分组
+                    size_group = (round(cargo.length / 10) * 10, 
+                                 round(cargo.width / 10) * 10, 
+                                 round(cargo.height / 10) * 10)
+                    scores.append((-size_group[0], -size_group[1], -size_group[2]))
+            return tuple(scores)
+        
+        return sorted(cargos, key=composite_key)
     
     def expand_groups(self, cargos: List[Cargo]) -> List[Cargo]:
         """处理货物组，将组合货物合并为单个虚拟货物"""
@@ -862,9 +890,14 @@ class Container3DView(QOpenGLWidget):
         self.drag_start_pos = None
         self.drag_axis = None  # 'x', 'y', 'z'
         
+        # 吸附和碰撞检测
+        self.snap_distance = 5  # 吸附距离 (cm)
+        self.collision_enabled = True  # 是否启用碰撞检测
+        
         # 选择回调
         self.on_cargo_selected = None  # 选中货物时的回调
         self.on_cargo_moved = None  # 移动货物后的回调
+        self.on_cargo_rotated = None  # 旋转货物后的回调
         
         self.setMinimumSize(600, 400)
     
@@ -876,6 +909,176 @@ class Container3DView(QOpenGLWidget):
             self.dragging = False
         self.update()
     
+    def check_collision(self, placed: 'PlacedCargo', new_x: float, new_y: float, new_z: float, exclude_index: int = -1) -> bool:
+        """检查货物在新位置是否与其他货物碰撞
+        返回 True 表示有碰撞"""
+        length = placed.actual_length
+        width = placed.actual_width
+        height = placed.cargo.height
+        
+        for i, other in enumerate(self.placed_cargos):
+            if i == exclude_index:
+                continue
+            
+            ol = other.actual_length
+            ow = other.actual_width
+            oh = other.cargo.height
+            
+            # 碰撞检测（带微小容差）
+            if (new_x < other.x + ol - 0.5 and new_x + length > other.x + 0.5 and
+                new_y < other.y + ow - 0.5 and new_y + width > other.y + 0.5 and
+                new_z < other.z + oh - 0.5 and new_z + height > other.z + 0.5):
+                return True
+        return False
+    
+    def find_snap_position(self, placed: 'PlacedCargo', new_x: float, new_y: float, new_z: float, exclude_index: int = -1) -> tuple:
+        """找到吸附位置
+        返回 (snapped_x, snapped_y, snapped_z)"""
+        snap_dist = self.snap_distance
+        length = placed.actual_length
+        width = placed.actual_width
+        height = placed.cargo.height
+        
+        best_x, best_y, best_z = new_x, new_y, new_z
+        
+        # 吸附到容器边界
+        if abs(new_x) < snap_dist:
+            best_x = 0
+        if abs(new_x + length - self.container.length) < snap_dist:
+            best_x = self.container.length - length
+        if abs(new_y) < snap_dist:
+            best_y = 0
+        if abs(new_y + width - self.container.width) < snap_dist:
+            best_y = self.container.width - width
+        if abs(new_z) < snap_dist:
+            best_z = 0
+        
+        # 吸附到其他货物边缘
+        for i, other in enumerate(self.placed_cargos):
+            if i == exclude_index:
+                continue
+            
+            ol = other.actual_length
+            ow = other.actual_width
+            oh = other.cargo.height
+            
+            # X方向吸附
+            if abs(new_x - (other.x + ol)) < snap_dist:  # 左边缘对齐右边缘
+                best_x = other.x + ol
+            if abs(new_x + length - other.x) < snap_dist:  # 右边缘对齐左边缘
+                best_x = other.x - length
+            
+            # Y方向吸附
+            if abs(new_y - (other.y + ow)) < snap_dist:
+                best_y = other.y + ow
+            if abs(new_y + width - other.y) < snap_dist:
+                best_y = other.y - width
+            
+            # Z方向吸附（堆叠）
+            if abs(new_z - (other.z + oh)) < snap_dist:
+                best_z = other.z + oh
+            if abs(new_z + height - other.z) < snap_dist:
+                best_z = other.z - height
+        
+        return best_x, best_y, best_z
+    
+    def rotate_selected_cargo(self):
+        """旋转选中的货物（水平方向，长宽互换）"""
+        if self.selected_cargo_index < 0 or self.selected_cargo_index >= len(self.placed_cargos):
+            return False
+        
+        placed = self.placed_cargos[self.selected_cargo_index]
+        cargo = placed.cargo
+        
+        # 检查是否允许旋转
+        if not cargo.allow_rotate:
+            return False
+        
+        # 保存原始状态
+        original_rotated = placed.rotated
+        original_x, original_y = placed.x, placed.y
+        
+        # 尝试旋转
+        placed.rotated = not placed.rotated
+        new_length = placed.actual_length
+        new_width = placed.actual_width
+        
+        # 调整位置使货物中心保持不变
+        center_x = original_x + (cargo.length if not original_rotated else cargo.width) / 2
+        center_y = original_y + (cargo.width if not original_rotated else cargo.length) / 2
+        new_x = center_x - new_length / 2
+        new_y = center_y - new_width / 2
+        
+        # 确保在容器边界内
+        new_x = max(0, min(self.container.length - new_length, new_x))
+        new_y = max(0, min(self.container.width - new_width, new_y))
+        
+        # 检查碰撞
+        if self.collision_enabled and self.check_collision(placed, new_x, new_y, placed.z, self.selected_cargo_index):
+            # 如果有碰撞，尝试找附近的有效位置
+            found_valid = False
+            for dx in range(-50, 51, 10):
+                for dy in range(-50, 51, 10):
+                    test_x = new_x + dx
+                    test_y = new_y + dy
+                    test_x = max(0, min(self.container.length - new_length, test_x))
+                    test_y = max(0, min(self.container.width - new_width, test_y))
+                    if not self.check_collision(placed, test_x, test_y, placed.z, self.selected_cargo_index):
+                        new_x, new_y = test_x, test_y
+                        found_valid = True
+                        break
+                if found_valid:
+                    break
+            
+            if not found_valid:
+                # 无法旋转，恢复原状
+                placed.rotated = original_rotated
+                return False
+        
+        placed.x = new_x
+        placed.y = new_y
+        self.update()
+        
+        if self.on_cargo_rotated:
+            self.on_cargo_rotated(self.selected_cargo_index)
+        
+        return True
+    
+    def move_selected_cargo(self, dx: float, dy: float, dz: float) -> bool:
+        """移动选中的货物指定距离（用于微调）
+        返回是否移动成功"""
+        if self.selected_cargo_index < 0 or self.selected_cargo_index >= len(self.placed_cargos):
+            return False
+        
+        placed = self.placed_cargos[self.selected_cargo_index]
+        length = placed.actual_length
+        width = placed.actual_width
+        height = placed.cargo.height
+        
+        # 计算新位置
+        new_x = placed.x + dx
+        new_y = placed.y + dy
+        new_z = placed.z + dz
+        
+        # 边界检查
+        new_x = max(0, min(self.container.length - length, new_x))
+        new_y = max(0, min(self.container.width - width, new_y))
+        new_z = max(0, min(self.container.height - height, new_z))
+        
+        # 碰撞检测
+        if self.collision_enabled and self.check_collision(placed, new_x, new_y, new_z, self.selected_cargo_index):
+            return False
+        
+        placed.x = new_x
+        placed.y = new_y
+        placed.z = new_z
+        self.update()
+        
+        if self.on_cargo_moved:
+            self.on_cargo_moved(self.selected_cargo_index)
+        
+        return True
+
     def set_multi_container_results(self, results: List[ContainerLoadingResult]):
         """设置多集装箱结果"""
         self.all_container_results = results
@@ -1635,14 +1838,34 @@ class Container3DView(QOpenGLWidget):
                 modifiers = QApplication.keyboardModifiers()
                 if modifiers == Qt.KeyboardModifier.ShiftModifier:
                     # Shift + 拖动改变高度
-                    placed.z = max(0, min(self.container.height - placed.cargo.height, 
-                                         placed.z - dy * move_scale))
+                    new_z = placed.z - dy * move_scale
+                    new_z = max(0, min(self.container.height - placed.cargo.height, new_z))
+                    
+                    # 吸附和碰撞检测
+                    snap_x, snap_y, snap_z = self.find_snap_position(placed, placed.x, placed.y, new_z, self.selected_cargo_index)
+                    if not self.collision_enabled or not self.check_collision(placed, placed.x, placed.y, snap_z, self.selected_cargo_index):
+                        placed.z = snap_z
                 else:
                     # 正常拖动改变X和Y
-                    placed.x = max(0, min(self.container.length - placed.actual_length, 
-                                         placed.x + dx * move_scale))
-                    placed.y = max(0, min(self.container.width - placed.actual_width, 
-                                         placed.y + dy * move_scale))
+                    new_x = placed.x + dx * move_scale
+                    new_y = placed.y + dy * move_scale
+                    
+                    # 边界检查
+                    new_x = max(0, min(self.container.length - placed.actual_length, new_x))
+                    new_y = max(0, min(self.container.width - placed.actual_width, new_y))
+                    
+                    # 吸附
+                    snap_x, snap_y, snap_z = self.find_snap_position(placed, new_x, new_y, placed.z, self.selected_cargo_index)
+                    
+                    # 碰撞检测
+                    if not self.collision_enabled or not self.check_collision(placed, snap_x, snap_y, placed.z, self.selected_cargo_index):
+                        placed.x = snap_x
+                        placed.y = snap_y
+                    elif not self.check_collision(placed, new_x, new_y, placed.z, self.selected_cargo_index):
+                        # 如果吸附位置有碰撞，使用原始位置
+                        placed.x = new_x
+                        placed.y = new_y
+                    # 如果都有碰撞，不移动
                 
                 self.last_mouse_pos = event.pos()
                 self.update()
@@ -1675,6 +1898,41 @@ class Container3DView(QOpenGLWidget):
         self.mouse_button = None
         self.dragging = False
     
+    def keyPressEvent(self, event):
+        """键盘事件处理"""
+        if not self.drag_mode:
+            return
+        
+        # R键旋转货物
+        if event.key() == Qt.Key.Key_R:
+            if self.rotate_selected_cargo():
+                self.update()
+            return
+        
+        # 方向键微调 (1cm)
+        step = 1.0
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            step = 10.0  # Ctrl + 方向键 10cm 步进
+        
+        moved = False
+        if event.key() == Qt.Key.Key_Left:
+            moved = self.move_selected_cargo(-step, 0, 0)
+        elif event.key() == Qt.Key.Key_Right:
+            moved = self.move_selected_cargo(step, 0, 0)
+        elif event.key() == Qt.Key.Key_Up:
+            moved = self.move_selected_cargo(0, -step, 0)
+        elif event.key() == Qt.Key.Key_Down:
+            moved = self.move_selected_cargo(0, step, 0)
+        elif event.key() == Qt.Key.Key_PageUp:
+            moved = self.move_selected_cargo(0, 0, step)
+        elif event.key() == Qt.Key.Key_PageDown:
+            moved = self.move_selected_cargo(0, 0, -step)
+        
+        if moved:
+            # 更新选中货物信息显示
+            if self.on_cargo_selected:
+                self.on_cargo_selected(self.selected_cargo_index)
+
     def wheelEvent(self, event):
         """鼠标滚轮 - 平滑缩放"""
         delta = event.angleDelta().y()
@@ -2587,9 +2845,77 @@ class ContainerLoadingApp(QMainWindow):
         self.drag_mode_btn = ModernButton("🎯 拖拽调整模式")
         self.drag_mode_btn.setCheckable(True)
         self.drag_mode_btn.clicked.connect(self.toggle_drag_mode)
-        self.drag_mode_btn.setToolTip("开启后可在3D视图中直接拖拽调整货物位置\n左键点击选中，拖动移动，Shift+拖动改变高度")
+        self.drag_mode_btn.setToolTip("开启后可在3D视图中直接拖拽调整货物位置\n左键点击选中，拖动移动，Shift+拖动改变高度\nR键旋转货物，方向键微调(1cm)，Ctrl+方向键(10cm)")
         drag_layout.addWidget(self.drag_mode_btn)
         action_layout.addLayout(drag_layout)
+        
+        # 拖拽模式辅助控制按钮
+        drag_control_layout = QHBoxLayout()
+        
+        # 旋转按钮
+        self.rotate_cargo_btn = ModernButton("🔄 旋转")
+        self.rotate_cargo_btn.clicked.connect(self.rotate_selected_cargo_from_btn)
+        self.rotate_cargo_btn.setToolTip("旋转选中的货物 (快捷键: R)")
+        self.rotate_cargo_btn.setEnabled(False)
+        drag_control_layout.addWidget(self.rotate_cargo_btn)
+        
+        # 碰撞检测开关
+        self.collision_check = QCheckBox("碰撞检测")
+        self.collision_check.setChecked(True)
+        self.collision_check.stateChanged.connect(self.toggle_collision_detection)
+        self.collision_check.setToolTip("开启后移动货物时防止与其他货物重叠")
+        drag_control_layout.addWidget(self.collision_check)
+        action_layout.addLayout(drag_control_layout)
+        
+        # 微调按钮组
+        fine_tune_layout = QHBoxLayout()
+        fine_tune_label = QLabel("微调:")
+        fine_tune_layout.addWidget(fine_tune_label)
+        
+        # 1cm 微调按钮
+        self.step_1cm_btns = {}
+        btn_x_minus = ModernButton("X-")
+        btn_x_minus.setFixedWidth(35)
+        btn_x_minus.clicked.connect(lambda: self.fine_tune_cargo(-1, 0, 0))
+        fine_tune_layout.addWidget(btn_x_minus)
+        
+        btn_x_plus = ModernButton("X+")
+        btn_x_plus.setFixedWidth(35)
+        btn_x_plus.clicked.connect(lambda: self.fine_tune_cargo(1, 0, 0))
+        fine_tune_layout.addWidget(btn_x_plus)
+        
+        btn_y_minus = ModernButton("Y-")
+        btn_y_minus.setFixedWidth(35)
+        btn_y_minus.clicked.connect(lambda: self.fine_tune_cargo(0, -1, 0))
+        fine_tune_layout.addWidget(btn_y_minus)
+        
+        btn_y_plus = ModernButton("Y+")
+        btn_y_plus.setFixedWidth(35)
+        btn_y_plus.clicked.connect(lambda: self.fine_tune_cargo(0, 1, 0))
+        fine_tune_layout.addWidget(btn_y_plus)
+        
+        btn_z_minus = ModernButton("Z-")
+        btn_z_minus.setFixedWidth(35)
+        btn_z_minus.clicked.connect(lambda: self.fine_tune_cargo(0, 0, -1))
+        fine_tune_layout.addWidget(btn_z_minus)
+        
+        btn_z_plus = ModernButton("Z+")
+        btn_z_plus.setFixedWidth(35)
+        btn_z_plus.clicked.connect(lambda: self.fine_tune_cargo(0, 0, 1))
+        fine_tune_layout.addWidget(btn_z_plus)
+        
+        action_layout.addLayout(fine_tune_layout)
+        
+        # 步进大小选择
+        step_layout = QHBoxLayout()
+        step_layout.addWidget(QLabel("步进:"))
+        self.step_size_combo = QComboBox()
+        self.step_size_combo.addItems(["1 cm", "5 cm", "10 cm", "20 cm"])
+        self.step_size_combo.setCurrentIndex(0)
+        self.step_size_combo.setToolTip("设置微调按钮的移动距离")
+        step_layout.addWidget(self.step_size_combo)
+        step_layout.addStretch()
+        action_layout.addLayout(step_layout)
         
         manual_btn = ModernButton("✋ 精确调整")
         manual_btn.clicked.connect(self.enable_manual_edit)
@@ -2611,6 +2937,12 @@ class ContainerLoadingApp(QMainWindow):
         export_image_btn.setToolTip("导出装载图（俯视图、正视图、侧视图）")
         export_layout.addWidget(export_image_btn)
         action_layout.addLayout(export_layout)
+        
+        # 加固建议按钮
+        securing_btn = ModernButton("🔧 查看加固建议")
+        securing_btn.clicked.connect(self.show_securing_advice_dialog)
+        securing_btn.setToolTip("根据配载结果分析，给出智能加固建议")
+        action_layout.addWidget(securing_btn)
         
         scroll_layout.addWidget(action_group)
         
@@ -5215,25 +5547,256 @@ class ContainerLoadingApp(QMainWindow):
         
         return ", ".join(advice) if advice else "标准加固"
     
-    def get_tail_securing_advice(self) -> str:
-        """获取尾部加固建议"""
-        advice = []
-        advice.append("  1. 使用木方或气囊填充尾部空隙")
-        advice.append("  2. 最后一排货物使用绑带横向固定")
-        advice.append("  3. 如有空隙超过30cm，建议使用充气袋填充")
-        advice.append("  4. 重货建议使用钢丝绳加固")
+    def analyze_tail_space(self) -> dict:
+        """分析集装箱尾部空间情况，用于生成加固建议"""
+        if not self.placed_cargos or not self.container:
+            return {}
         
-        # 根据容器类型添加特定建议
+        # 找到最后一排货物的 X 坐标
+        max_x_end = 0
+        last_row_cargos = []
+        
+        for p in self.placed_cargos:
+            x_end = p.x + p.actual_length
+            if x_end > max_x_end:
+                max_x_end = x_end
+        
+        # 尾部剩余空间
+        tail_gap = self.container.length - max_x_end
+        
+        # 找最后一排的货物（X坐标最大的那些）
+        threshold = max_x_end - 50  # 50cm 范围内的都算最后一排
+        for p in self.placed_cargos:
+            if p.x + p.actual_length >= threshold:
+                last_row_cargos.append(p)
+        
+        # 分析宽度方向的空隙
+        width_gaps = []
+        if last_row_cargos:
+            # 按 Y 坐标排序
+            sorted_by_y = sorted(last_row_cargos, key=lambda p: p.y)
+            # 检查左边空隙
+            if sorted_by_y[0].y > 5:
+                width_gaps.append(('左侧', sorted_by_y[0].y))
+            # 检查货物之间的空隙
+            for i in range(len(sorted_by_y) - 1):
+                gap = sorted_by_y[i+1].y - (sorted_by_y[i].y + sorted_by_y[i].actual_width)
+                if gap > 5:
+                    width_gaps.append(('货物间', gap))
+            # 检查右边空隙
+            last_cargo = sorted_by_y[-1]
+            right_gap = self.container.width - (last_cargo.y + last_cargo.actual_width)
+            if right_gap > 5:
+                width_gaps.append(('右侧', right_gap))
+        
+        # 分析高度方向的空隙（最后一排货物上方的空间）
+        height_gaps = []
+        for p in last_row_cargos:
+            top_gap = self.container.height - (p.z + p.cargo.height)
+            if top_gap > 10:
+                height_gaps.append((p.cargo.name, top_gap, p.z + p.cargo.height))
+        
+        # 分析最后一排是否稳定
+        bottom_cargos = [p for p in last_row_cargos if p.z < 1]
+        stacked_cargos = [p for p in last_row_cargos if p.z >= 1]
+        
+        return {
+            'tail_gap': tail_gap,
+            'last_row_count': len(last_row_cargos),
+            'width_gaps': width_gaps,
+            'height_gaps': height_gaps,
+            'bottom_cargos': bottom_cargos,
+            'stacked_cargos': stacked_cargos,
+            'max_x_end': max_x_end
+        }
+    
+    def get_tail_securing_advice(self) -> str:
+        """获取智能尾部加固建议，根据实际空间分析"""
+        analysis = self.analyze_tail_space()
+        
+        if not analysis:
+            return "  无货物，无需加固建议"
+        
+        advice = []
+        advice.append("━━━━━━━━━━ 集装箱尾部加固建议 ━━━━━━━━━━")
+        advice.append("")
+        
+        # 1. 尾部纵向空隙处理
+        tail_gap = analysis.get('tail_gap', 0)
+        if tail_gap > 0:
+            advice.append(f"【纵向空隙】尾部剩余空间: {tail_gap:.0f} cm")
+            if tail_gap > 100:
+                advice.append("  ⚠️ 空隙较大 (>100cm)，建议:")
+                advice.append("    • 使用木方框架搭建隔板固定")
+                advice.append("    • 配合充气袋填充大空间")
+                advice.append("    • 考虑使用货物网或绑带横向固定")
+            elif tail_gap > 50:
+                advice.append("  ⚠️ 中等空隙 (50-100cm)，建议:")
+                advice.append("    • 使用2-3个充气袋填充")
+                advice.append("    • 或使用木条/木块搭建支撑")
+            elif tail_gap > 20:
+                advice.append("  • 使用充气袋填充 (1-2个)")
+                advice.append("  • 或使用泡沫块/纸箱填充")
+            else:
+                advice.append("  ✓ 空隙较小，使用泡沫条或气泡膜填充即可")
+        else:
+            advice.append("【纵向空隙】✓ 货物贴紧柜门，无纵向空隙")
+        
+        advice.append("")
+        
+        # 2. 宽度方向空隙处理
+        width_gaps = analysis.get('width_gaps', [])
+        if width_gaps:
+            advice.append("【横向空隙】检测到宽度方向存在空隙:")
+            for position, gap in width_gaps:
+                if gap > 30:
+                    advice.append(f"  ⚠️ {position}空隙 {gap:.0f}cm - 建议使用充气袋填充")
+                elif gap > 10:
+                    advice.append(f"  • {position}空隙 {gap:.0f}cm - 建议使用木块或泡沫块填充")
+                else:
+                    advice.append(f"  • {position}空隙 {gap:.0f}cm - 可用填充物填塞")
+        else:
+            advice.append("【横向空隙】✓ 货物紧密排列，无明显横向空隙")
+        
+        advice.append("")
+        
+        # 3. 高度方向处理
+        height_gaps = analysis.get('height_gaps', [])
+        stacked = analysis.get('stacked_cargos', [])
+        bottom = analysis.get('bottom_cargos', [])
+        
+        if height_gaps:
+            advice.append("【垂直空隙】最后一排货物上方空间:")
+            # 只显示前3个
+            for cargo_name, gap, top_z in height_gaps[:3]:
+                if gap > 50:
+                    advice.append(f"  • {cargo_name[:10]}: 顶部{gap:.0f}cm空隙 - 建议使用木条固定防止顶部货物移动")
+        
+        if stacked:
+            advice.append("【堆叠货物】检测到多层堆叠的货物:")
+            advice.append(f"  • 共 {len(stacked)} 件堆叠货物")
+            advice.append("  • 建议使用绑带将上下层货物绑定")
+            advice.append("  • 高处重货需特别注意，使用钢丝绳加固")
+        
+        advice.append("")
+        
+        # 4. 底部固定建议
+        if bottom:
+            advice.append("【底部固定】底层货物加固建议:")
+            heavy_bottom = [p for p in bottom if p.cargo.weight > 200]
+            if heavy_bottom:
+                advice.append(f"  • 底层有 {len(heavy_bottom)} 件重货 (>200kg)")
+                advice.append("  • 建议在货物底部放置防滑垫")
+                advice.append("  • 使用木块或楔子在货物前后固定")
+            else:
+                advice.append("  • 使用防滑垫或木条固定底层货物")
+        
+        advice.append("")
+        
+        # 5. 根据容器类型的特定建议
         if hasattr(self, 'container') and self.container:
+            advice.append("【特别注意事项】")
             if self.container.container_type == "truck":
-                advice.append("  5. 货车运输建议使用防滑垫")
-                advice.append("  6. 注意轴重分布，重心尽量靠近车轴")
+                advice.append("  🚛 货车运输注意事项:")
+                advice.append("    • 确保重心尽量靠近车轴，避免头重或尾重")
+                advice.append("    • 使用防滑垫防止刹车时货物前冲")
+                advice.append("    • 货物固定需能承受急刹车的惯性力")
             elif self.container.container_type == "shipping":
-                advice.append("  5. 海运建议预留膨胀空间")
-                advice.append("  6. 注意集装箱门端加固，防止开门时货物倾倒")
+                advice.append("  🚢 海运集装箱注意事项:")
+                advice.append("    • 预留膨胀空间，防止温度变化导致货物变形")
+                advice.append("    • 柜门端加固需特别注意，防止开门时货物倾倒")
+                advice.append("    • 建议在门端使用木方或钢管横向固定")
+                advice.append("    • 考虑海上颠簸，所有加固材料需加强")
+            else:
+                advice.append("  • 确保所有货物固定牢靠")
+                advice.append("  • 检查绑带/绳索是否系紧")
+        
+        advice.append("")
+        advice.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         
         return "\n".join(advice)
     
+    def show_securing_advice_dialog(self):
+        """显示智能加固建议对话框"""
+        if not self.placed_cargos:
+            QMessageBox.information(self, "提示", "请先进行配载，然后再查看加固建议。")
+            return
+        
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("🔧 智能加固建议")
+        dialog.setMinimumSize(700, 600)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #1e1e1e;
+            }
+            QTextEdit {
+                background-color: #2d2d2d;
+                color: #e0e0e0;
+                border: 1px solid #3d3d3d;
+                border-radius: 5px;
+                padding: 10px;
+                font-family: 'Consolas', 'Microsoft YaHei', monospace;
+                font-size: 12px;
+            }
+            QPushButton {
+                background-color: #0078d4;
+                color: white;
+                border: none;
+                padding: 8px 20px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1084d8;
+            }
+            QLabel {
+                color: #e0e0e0;
+            }
+        """)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 标题
+        title_label = QLabel("📦 基于配载结果的智能加固分析")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; padding: 10px;")
+        layout.addWidget(title_label)
+        
+        # 统计信息
+        analysis = self.analyze_tail_space()
+        stats_text = f"装载货物: {len(self.placed_cargos)} 件 | "
+        stats_text += f"尾部空隙: {analysis.get('tail_gap', 0):.0f} cm | "
+        stats_text += f"最后一排: {analysis.get('last_row_count', 0)} 件"
+        stats_label = QLabel(stats_text)
+        stats_label.setStyleSheet("padding: 5px; color: #9cdcfe;")
+        layout.addWidget(stats_label)
+        
+        # 加固建议内容
+        advice_text = QTextEdit()
+        advice_text.setReadOnly(True)
+        advice_text.setText(self.get_tail_securing_advice())
+        layout.addWidget(advice_text)
+        
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        
+        copy_btn = QPushButton("📋 复制到剪贴板")
+        copy_btn.clicked.connect(lambda: (
+            QApplication.clipboard().setText(advice_text.toPlainText()),
+            QMessageBox.information(dialog, "提示", "已复制到剪贴板！")
+        ))
+        btn_layout.addWidget(copy_btn)
+        
+        btn_layout.addStretch()
+        
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        dialog.exec()
+
     # ==================== 多集装箱功能 ====================
     
     def toggle_multi_container_mode(self, state):
@@ -5300,6 +5863,9 @@ class ContainerLoadingApp(QMainWindow):
         """切换拖拽调整模式"""
         self.gl_widget.set_drag_mode(checked)
         
+        # 启用/禁用旋转按钮
+        self.rotate_cargo_btn.setEnabled(checked)
+        
         if checked:
             self.drag_mode_btn.setStyleSheet("""
                 QPushButton {
@@ -5311,7 +5877,7 @@ class ContainerLoadingApp(QMainWindow):
                     font-weight: bold;
                 }
             """)
-            self.drag_hint_label.setText("拖拽模式已开启：左键选中货物 → 拖动移动 → Shift+拖动改变高度")
+            self.drag_hint_label.setText("拖拽模式已开启：左键选中 → 拖动移动 → Shift+拖动调高度 → R键旋转 → 方向键微调")
             self.drag_hint_label.setVisible(True)
         else:
             self.drag_mode_btn.setStyleSheet("""
@@ -5325,6 +5891,36 @@ class ContainerLoadingApp(QMainWindow):
             """)
             self.drag_hint_label.setVisible(False)
     
+    def rotate_selected_cargo_from_btn(self):
+        """从按钮触发旋转选中的货物"""
+        if self.gl_widget.rotate_selected_cargo():
+            # 更新显示信息
+            index = self.gl_widget.selected_cargo_index
+            if 0 <= index < len(self.placed_cargos):
+                self.update_selected_cargo_info(index)
+                placed = self.placed_cargos[index]
+                self.drag_hint_label.setText(f"已旋转: {placed.cargo.name} → 新位置: ({placed.x:.0f}, {placed.y:.0f}, {placed.z:.0f})")
+        else:
+            self.drag_hint_label.setText("无法旋转：货物不允许旋转或会与其他货物碰撞")
+    
+    def toggle_collision_detection(self, state):
+        """切换碰撞检测开关"""
+        self.gl_widget.collision_enabled = (state == 2)
+    
+    def fine_tune_cargo(self, dx: int, dy: int, dz: int):
+        """微调货物位置"""
+        # 获取步进大小
+        step_text = self.step_size_combo.currentText()
+        step = float(step_text.split()[0])  # 提取数字部分
+        
+        if self.gl_widget.move_selected_cargo(dx * step, dy * step, dz * step):
+            # 更新显示信息
+            index = self.gl_widget.selected_cargo_index
+            if 0 <= index < len(self.placed_cargos):
+                self.update_selected_cargo_info(index)
+        else:
+            self.drag_hint_label.setText("无法移动：碰到边界或其他货物")
+
     def on_cargo_drag_selected(self, index: int):
         """货物被拖拽选中"""
         if 0 <= index < len(self.placed_cargos):

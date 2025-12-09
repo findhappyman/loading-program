@@ -2748,18 +2748,18 @@ class ContainerLoadingApp(QMainWindow):
         self.cargo_table = QTableWidget()
         self.cargo_table.setColumnCount(6)
         self.cargo_table.setHorizontalHeaderLabels(["名称", "尺寸(cm)", "重量", "数量", "选项", "体积"])
-        # 设置各列宽度 - 全部固定宽度
+        # 设置各列宽度
         self.cargo_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.cargo_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # 尺寸列自动拉伸
         self.cargo_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.cargo_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.cargo_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.cargo_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.cargo_table.setColumnWidth(0, 60)   # 名称
-        self.cargo_table.setColumnWidth(2, 60)   # 重量
-        self.cargo_table.setColumnWidth(3, 35)   # 数量
-        self.cargo_table.setColumnWidth(4, 50)   # 选项
-        self.cargo_table.setColumnWidth(5, 45)   # 体积
+        self.cargo_table.setColumnWidth(0, 65)   # 名称
+        self.cargo_table.setColumnWidth(2, 55)   # 重量
+        self.cargo_table.setColumnWidth(3, 40)   # 数量
+        self.cargo_table.setColumnWidth(4, 45)   # 选项
+        self.cargo_table.setColumnWidth(5, 50)   # 体积
         self.cargo_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.cargo_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.cargo_table.setAlternatingRowColors(True)
@@ -2942,8 +2942,9 @@ class ContainerLoadingApp(QMainWindow):
         view_btn_layout.addWidget(fullscreen_btn)
         
         # 使用手册按钮
-        help_btn = ModernButton("❓ 使用手册")
+        help_btn = ModernButton("❓ 手册")
         help_btn.setStyleSheet("background-color: #6A1B9A; color: white; font-weight: bold;")
+        help_btn.setMinimumWidth(70)
         help_btn.clicked.connect(self.show_user_manual)
         view_btn_layout.addWidget(help_btn)
         
@@ -2990,7 +2991,17 @@ class ContainerLoadingApp(QMainWindow):
         self.collision_check.setChecked(True)
         self.collision_check.stateChanged.connect(self.toggle_collision_detection)
         self.collision_check.setToolTip("开启后移动货物时防止与其他货物重叠")
-        self.collision_check.setStyleSheet("color: #E0E0E0;")
+        self.collision_check.setStyleSheet("""
+            QCheckBox {
+                color: #E0E0E0;
+                spacing: 5px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+        """)
+        self.collision_check.setMinimumWidth(85)
         drag_row1.addWidget(self.collision_check)
         
         drag_row1.addStretch()
@@ -2998,68 +3009,92 @@ class ContainerLoadingApp(QMainWindow):
         
         # 第二行：微调按钮
         drag_row2 = QHBoxLayout()
+        drag_row2.setSpacing(4)
         
         fine_tune_label = QLabel("微调:")
-        fine_tune_label.setStyleSheet("color: #B0BEC5; font-size: 11px;")
-        fine_tune_label.setFixedWidth(35)
+        fine_tune_label.setStyleSheet("color: #B0BEC5; font-size: 12px;")
         drag_row2.addWidget(fine_tune_label)
         
+        # 创建小按钮的样式
+        small_btn_style = """
+            QPushButton {
+                background-color: #455A64;
+                color: white;
+                border: 1px solid #607D8B;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                background-color: #546E7A;
+            }
+            QPushButton:pressed {
+                background-color: #37474F;
+            }
+        """
+        
         # X 方向
-        btn_x_minus = ModernButton("-X")
-        btn_x_minus.setFixedSize(36, 28)
+        btn_x_minus = QPushButton("X-")
+        btn_x_minus.setFixedSize(40, 26)
+        btn_x_minus.setStyleSheet(small_btn_style)
         btn_x_minus.clicked.connect(lambda: self.fine_tune_cargo(-1, 0, 0))
         btn_x_minus.setToolTip("X方向负向移动")
         drag_row2.addWidget(btn_x_minus)
         
-        btn_x_plus = ModernButton("+X")
-        btn_x_plus.setFixedSize(36, 28)
+        btn_x_plus = QPushButton("X+")
+        btn_x_plus.setFixedSize(40, 26)
+        btn_x_plus.setStyleSheet(small_btn_style)
         btn_x_plus.clicked.connect(lambda: self.fine_tune_cargo(1, 0, 0))
         btn_x_plus.setToolTip("X方向正向移动")
         drag_row2.addWidget(btn_x_plus)
         
-        drag_row2.addSpacing(5)
+        drag_row2.addSpacing(8)
         
         # Y 方向
-        btn_y_minus = ModernButton("-Y")
-        btn_y_minus.setFixedSize(36, 28)
+        btn_y_minus = QPushButton("Y-")
+        btn_y_minus.setFixedSize(40, 26)
+        btn_y_minus.setStyleSheet(small_btn_style)
         btn_y_minus.clicked.connect(lambda: self.fine_tune_cargo(0, -1, 0))
         btn_y_minus.setToolTip("Y方向负向移动")
         drag_row2.addWidget(btn_y_minus)
         
-        btn_y_plus = ModernButton("+Y")
-        btn_y_plus.setFixedSize(36, 28)
+        btn_y_plus = QPushButton("Y+")
+        btn_y_plus.setFixedSize(40, 26)
+        btn_y_plus.setStyleSheet(small_btn_style)
         btn_y_plus.clicked.connect(lambda: self.fine_tune_cargo(0, 1, 0))
         btn_y_plus.setToolTip("Y方向正向移动")
         drag_row2.addWidget(btn_y_plus)
         
-        drag_row2.addSpacing(5)
+        drag_row2.addSpacing(8)
         
         # Z 方向
-        btn_z_minus = ModernButton("-Z")
-        btn_z_minus.setFixedSize(36, 28)
+        btn_z_minus = QPushButton("Z-")
+        btn_z_minus.setFixedSize(40, 26)
+        btn_z_minus.setStyleSheet(small_btn_style)
         btn_z_minus.clicked.connect(lambda: self.fine_tune_cargo(0, 0, -1))
         btn_z_minus.setToolTip("Z方向向下移动")
         drag_row2.addWidget(btn_z_minus)
         
-        btn_z_plus = ModernButton("+Z")
-        btn_z_plus.setFixedSize(36, 28)
+        btn_z_plus = QPushButton("Z+")
+        btn_z_plus.setFixedSize(40, 26)
+        btn_z_plus.setStyleSheet(small_btn_style)
         btn_z_plus.clicked.connect(lambda: self.fine_tune_cargo(0, 0, 1))
         btn_z_plus.setToolTip("Z方向向上移动")
         drag_row2.addWidget(btn_z_plus)
         
-        drag_row2.addSpacing(10)
+        drag_row2.addSpacing(15)
         
         # 步进选择
         step_label = QLabel("步进:")
-        step_label.setStyleSheet("color: #B0BEC5; font-size: 11px;")
-        step_label.setFixedWidth(35)
+        step_label.setStyleSheet("color: #B0BEC5; font-size: 12px;")
         drag_row2.addWidget(step_label)
         
         self.step_size_combo = QComboBox()
-        self.step_size_combo.addItems(["1cm", "5cm", "10cm", "20cm"])
+        self.step_size_combo.addItems(["1 cm", "5 cm", "10 cm", "20 cm"])
         self.step_size_combo.setCurrentIndex(0)
         self.step_size_combo.setToolTip("设置微调按钮的移动距离")
-        self.step_size_combo.setFixedWidth(60)
+        self.step_size_combo.setMinimumWidth(75)
         drag_row2.addWidget(self.step_size_combo)
         
         drag_row2.addStretch()

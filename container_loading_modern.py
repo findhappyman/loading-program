@@ -71,7 +71,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QSplitter, QFrame, QSpinBox,
     QDoubleSpinBox, QStyle, QStyleFactory, QScrollArea,
     QDialog, QGridLayout, QFormLayout, QListWidget, QTabWidget,
-    QProgressDialog, QTextEdit
+    QProgressDialog, QTextEdit, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon
@@ -1722,10 +1722,23 @@ class Container3DView(QOpenGLWidget):
         # 清除缓冲区
         glClearColor(0, 0, 0, 1)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        
+        # 设置投影矩阵 - 必须与 resizeGL 一致！
+        viewport = glGetIntegerv(GL_VIEWPORT)
+        w, h = viewport[2], viewport[3]
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        aspect = w / h if h > 0 else 1
+        gluPerspective(45, aspect, 0.1, 10000)
+        glMatrixMode(GL_MODELVIEW)
+        
+        # 禁用不需要的特性
         glDisable(GL_LIGHTING)
         glDisable(GL_BLEND)
         glDisable(GL_DITHER)
         glDisable(GL_TEXTURE_2D)
+        glEnable(GL_DEPTH_TEST)  # 确保深度测试开启，前面的货物优先
         
         # 设置视图变换 (与 paintGL_single 保持完全一致！)
         glLoadIdentity()
@@ -1751,10 +1764,14 @@ class Container3DView(QOpenGLWidget):
         glFinish()
         
         # 读取鼠标位置的像素颜色
-        viewport = glGetIntegerv(GL_VIEWPORT)
         pixel_y = viewport[3] - mouse_y  # OpenGL Y轴翻转
         
         pixel = glReadPixels(mouse_x, pixel_y, 1, 1, GL_RGB, GL_UNSIGNED_BYTE)
+        
+        # 恢复投影矩阵
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+        glMatrixMode(GL_MODELVIEW)
         
         # 恢复状态
         glPopAttrib()
@@ -1964,6 +1981,75 @@ class Container3DView(QOpenGLWidget):
         if preset in views:
             self.rotation_x, self.rotation_y = views[preset]
             self.update()
+
+
+class CollapsibleGroupBox(QGroupBox):
+    """可折叠的 GroupBox"""
+    def __init__(self, title: str, collapsed: bool = False, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self._collapsed = collapsed
+        self._content_widget = None
+        self._original_max_height = None
+        self._collapsed_height = 30  # 折叠时的高度
+        
+        self.setCheckable(True)
+        self.setChecked(not collapsed)
+        self.toggled.connect(self._on_toggled)
+        self._update_title()
+        
+        self.setStyleSheet("""
+            CollapsibleGroupBox {
+                font-weight: bold;
+                border: 1px solid #546E7A;
+                border-radius: 6px;
+                margin-top: 8px;
+                padding-top: 5px;
+            }
+            CollapsibleGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            CollapsibleGroupBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            CollapsibleGroupBox::indicator:checked {
+                image: none;
+            }
+            CollapsibleGroupBox::indicator:unchecked {
+                image: none;
+            }
+        """)
+    
+    def _update_title(self):
+        """更新标题显示折叠状态"""
+        arrow = "▼" if not self._collapsed else "▶"
+        self.setTitle(f"{arrow} {self._title}")
+    
+    def _on_toggled(self, checked: bool):
+        """处理折叠/展开"""
+        self._collapsed = not checked
+        self._update_title()
+        
+        # 遍历所有子控件（除了标题），设置可见性
+        for child in self.children():
+            if isinstance(child, QWidget) and child is not self:
+                child.setVisible(checked)
+        
+        if self._collapsed:
+            self.setMaximumHeight(self._collapsed_height)
+        else:
+            self.setMaximumHeight(16777215)  # 恢复默认最大高度
+    
+    def setCollapsed(self, collapsed: bool):
+        """设置折叠状态"""
+        self.setChecked(not collapsed)
+    
+    def isCollapsed(self) -> bool:
+        """获取折叠状态"""
+        return self._collapsed
 
 
 class ModernButton(QPushButton):
@@ -2464,7 +2550,7 @@ class ContainerLoadingApp(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("集装箱配载软件 v0.5 - by Henry Xue")
+        self.setWindowTitle("集装箱配载软件 v0.6 - by Henry Xue")
         self.setMinimumSize(1500, 900)
         self.resize(1600, 1000)
         
@@ -2611,10 +2697,10 @@ class ContainerLoadingApp(QMainWindow):
         main_layout.setSpacing(15)
         main_layout.setContentsMargins(15, 15, 15, 15)
         
-        # 左侧面板
+        # 左侧面板 - 设置适当宽度确保内容完整显示
         left_panel = QWidget()
-        left_panel.setMinimumWidth(520)
-        left_panel.setMaximumWidth(580)
+        left_panel.setMinimumWidth(480)
+        left_panel.setMaximumWidth(550)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(12)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -2916,7 +3002,9 @@ class ContainerLoadingApp(QMainWindow):
         # 设置拖拽回调
         self.gl_widget.on_cargo_selected = self.on_cargo_drag_selected
         self.gl_widget.on_cargo_moved = self.on_cargo_drag_moved
-        view_layout.addWidget(self.gl_widget)
+        self.gl_widget.setMinimumHeight(400)  # 设置最小高度
+        self.gl_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        view_layout.addWidget(self.gl_widget, 1)  # stretch factor = 1，优先扩展
         
         # 视图控制按钮
         view_btn_layout = QHBoxLayout()
@@ -3100,7 +3188,9 @@ class ContainerLoadingApp(QMainWindow):
         drag_row2.addStretch()
         drag_control_main_layout.addLayout(drag_row2)
         
-        view_layout.addWidget(drag_control_group)
+        drag_control_group.setMaximumHeight(100)  # 限制最大高度
+        drag_control_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        view_layout.addWidget(drag_control_group, 0)  # stretch factor = 0，不扩展
         
         # 拖拽模式提示
         self.drag_hint_label = QLabel("")
@@ -3108,10 +3198,10 @@ class ContainerLoadingApp(QMainWindow):
         self.drag_hint_label.setVisible(False)
         view_layout.addWidget(self.drag_hint_label)
         
-        # 选中货物信息面板
-        self.selected_cargo_group = QGroupBox("📦 选中货物信息 (点击3D视图中的货物查看)")
+        # 选中货物信息面板 - 可折叠，默认展开
+        self.selected_cargo_group = CollapsibleGroupBox("📦 选中货物信息", collapsed=False)
         self.selected_cargo_group.setStyleSheet("""
-            QGroupBox {
+            CollapsibleGroupBox {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #3d5a80, stop:1 #2c3e50);
                 border: 1px solid #4a90d9;
@@ -3120,7 +3210,7 @@ class ContainerLoadingApp(QMainWindow):
                 font-weight: bold;
                 color: #81D4FA;
             }
-            QGroupBox::title {
+            CollapsibleGroupBox::title {
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 5px;
@@ -3182,13 +3272,12 @@ class ContainerLoadingApp(QMainWindow):
         right_info.addStretch()
         selected_cargo_layout.addLayout(right_info)
         
-        self.selected_cargo_group.setMaximumHeight(120)
         view_layout.addWidget(self.selected_cargo_group)
         
         right_layout.addWidget(view_group)
         
-        # 统计信息
-        stats_group = QGroupBox("📊 配载统计")
+        # 统计信息 - 可折叠，默认展开
+        stats_group = CollapsibleGroupBox("📊 配载统计", collapsed=False)
         stats_layout = QVBoxLayout(stats_group)
         
         self.stats_label = QLabel("请先添加货物并开始配载")
@@ -3239,8 +3328,8 @@ class ContainerLoadingApp(QMainWindow):
         
         right_layout.addWidget(stats_group)
         
-        # ==================== 装箱步骤 ====================
-        steps_group = QGroupBox("📝 装箱步骤")
+        # ==================== 装箱步骤 ==================== 可折叠，默认展开
+        steps_group = CollapsibleGroupBox("📝 装箱步骤", collapsed=False)
         steps_layout = QVBoxLayout(steps_group)
         
         self.steps_table = QTableWidget()
@@ -6277,7 +6366,7 @@ class ContainerLoadingApp(QMainWindow):
         </table>
         
         <hr style="border-color: #3d3d3d; margin-top: 30px;">
-        <p style="text-align: center; color: #9e9e9e;">集装箱配载软件 v0.5 - by Henry Xue</p>
+        <p style="text-align: center; color: #9e9e9e;">集装箱配载软件 v0.6 - by Henry Xue</p>
         """
         
         content.setText(manual_html)

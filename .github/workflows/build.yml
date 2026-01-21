@@ -1,0 +1,165 @@
+name: Build Application
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Create virtual environment
+        run: |
+          python -m venv venv
+          echo "$env:GITHUB_WORKSPACE\venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name "ContainerLoading" --icon=assets/icon.ico --clean container_loading_modern.py
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ContainerLoading-Windows
+          path: dist/ContainerLoading.exe
+
+      - name: Release - Windows
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/ContainerLoading.exe
+          draft: false
+          prerelease: false
+
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Create virtual environment
+        run: |
+          python3 -m venv venv
+          echo "$GITHUB_WORKSPACE/venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Generate ICNS icon
+        run: |
+          mkdir -p assets/icon.iconset
+          sips -z 16 16     assets/icon.png --out assets/icon.iconset/icon_16x16.png
+          sips -z 32 32     assets/icon.png --out assets/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/icon.png --out assets/icon.iconset/icon_32x32.png
+          sips -z 64 64     assets/icon.png --out assets/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/icon.png --out assets/icon.iconset/icon_128x128.png
+          sips -z 256 256   assets/icon.png --out assets/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/icon.png --out assets/icon.iconset/icon_256x256.png
+          sips -z 512 512   assets/icon.png --out assets/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   assets/icon.png --out assets/icon.iconset/icon_512x512.png
+          sips -z 1024 1024 assets/icon.png --out assets/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns assets/icon.iconset -o assets/icon_build.icns
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onedir --windowed --name "ContainerLoading" --icon=assets/icon_build.icns --clean container_loading_modern.py
+
+      - name: Fix Info.plist encoding
+        run: |
+          # 确保 Info.plist 使用 UTF-8 编码
+          plutil -convert xml1 dist/ContainerLoading.app/Contents/Info.plist
+          # 设置正确的文件权限
+          chmod 644 dist/ContainerLoading.app/Contents/Info.plist
+
+      - name: Create DMG
+        run: |
+          # 设置UTF-8语言环境
+          export LANG=zh_CN.UTF-8
+          export LC_ALL=zh_CN.UTF-8
+
+          # 创建临时DMG目录
+          mkdir -p dmg_temp
+
+          # 复制.app到DMG目录
+          cp -R dist/ContainerLoading.app dmg_temp/
+
+          # 创建符号链接到Applications
+          ln -s /Applications dmg_temp/Applications
+
+          # 创建DMG，使用HFS+文件系统支持中文
+          hdiutil create -volname "ContainerLoading" \
+            -srcfolder dmg_temp \
+            -ov -format UDZO \
+            -fs HFS+ \
+            -fsargs "-c c=64,a=16,e=16" \
+            ContainerLoading.dmg
+
+          rm -rf dmg_temp
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ContainerLoading-macOS
+          path: ContainerLoading.dmg
+
+      - name: Release - macOS
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ContainerLoading.dmg
+          draft: false
+          prerelease: false

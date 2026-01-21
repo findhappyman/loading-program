@@ -49,3 +49,8 @@ desktop.ini
 dist/
 build/
 output/
+
+# Build artifacts
+*.app
+*.dmg
+*.exe

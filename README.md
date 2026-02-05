@@ -13,9 +13,16 @@
 
 ## 🖥️ 界面预览
 
+![软件主界面](docs/images/screenshot-main.png)
+*现代化的深色UI设计，集成3D可视化*
+
+### 主要特性
 - 现代深色UI设计
 - OpenGL 3D渲染，支持光照效果
 - 多视角切换（正视/后视/左视/右视/俯视/等轴）
+- 可拖拽旋转的交互式3D视图
+
+> 💡 提示：如需添加截图，请在 `docs/images/` 目录下放置图片文件
 
 ## 📋 系统要求
 
@@ -28,8 +35,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/container-loading.git
-cd container-loading
+git clone https://github.com/findhappyman/loading-program.git
+cd loading-program
 
 # 安装依赖
 pip install -r requirements.txt
@@ -38,9 +45,11 @@ pip install -r requirements.txt
 python container_loading_modern.py
 ```
 
-### 方式二：运行可执行文件
+### 方式二：下载可执行文件（推荐）
 
-下载 `dist/集装箱配载软件.exe` 直接运行（仅Windows）
+从 [GitHub Releases](https://github.com/findhappyman/loading-program/releases/latest) 下载最新版本的 `Container Loading.exe` 直接运行（仅Windows）
+
+**最新版本**: [v0.7](https://github.com/findhappyman/loading-program/releases/tag/v0.7) - 57.34 MB
 
 ## 📦 依赖库
 
@@ -67,8 +76,10 @@ python container_loading_modern.py
 
 ```bash
 pip install pyinstaller
-pyinstaller --name="集装箱配载软件" --windowed --onefile container_loading_modern.py
+pyinstaller --onefile --windowed --name "Container Loading" container_loading_modern.py
 ```
+
+生成的 exe 文件位于 `dist/` 目录。
 
 ## 📄 许可证
 
